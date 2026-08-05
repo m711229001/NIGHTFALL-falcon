@@ -1,0 +1,2 @@
+[console_scripts]
+nightfall = nightfall.cli:main

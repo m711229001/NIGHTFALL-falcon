@@ -1,0 +1,112 @@
+# ══════════════════════════════════════════════════════════════════════════════
+# NIGHTFALL Configuration
+# ══════════════════════════════════════════════════════════════════════════════
+
+# ── Target Scope ─────────────────────────────────────────────────────────────
+# Only these hosts (and their subdomains) will receive requests.
+# Wildcards: "*.example.com" matches any subdomain of example.com.
+targets:
+  - "*.staging.example.com"
+
+# Hosts explicitly denied even if they match a target pattern.
+deny_hosts: []
+
+# Allow requests to private/RFC1918 IP addresses (10.x, 172.16.x, 192.168.x).
+# Enable only for internal network pentests.
+allow_private: false
+
+# ── Budget & Performance ─────────────────────────────────────────────────────
+total_requests: 10000          # hard cap on total HTTP requests across all objectives
+workers: 8                     # concurrent async workers
+rate_limit_per_host: 30        # requests/second per host (token bucket)
+burst: 5                       # token bucket burst size
+
+# ── Proxy ────────────────────────────────────────────────────────────────────
+# Route all traffic through a proxy (e.g. Burp Suite for inspection).
+# Set to null or "" to disable.
+proxy: "http://127.0.0.1:8080"
+
+# ── Exploit Mode ─────────────────────────────────────────────────────────────
+# off     = detect only, no exploitation
+# confirm = prove impact: dump table sample, read file, blind command exec
+exploit_mode: "confirm"
+
+# Allow destructive actions (DROP TABLE, file write, etc.)
+# Default off — flip only on isolated targets.
+destructive: false
+
+# ── AI / Reasoning Engine ────────────────────────────────────────────────────
+ai:
+  # Provider: "anthropic" | "openai" | "custom"
+  # "custom" uses OpenAI-compatible /v1/chat/completions at base_url
+  provider: "anthropic"
+
+  # Base URL for the API
+  base_url: "https://api.anthropic.com/v1"
+
+  # Model identifier — set to the strongest reasoning model you have access to
+  model: "claude-sonnet-4-20250514"
+
+  # Extended thinking: "extended" enables reasoning tokens for plan/triage/synthesis
+  # "off" disables (cheaper, faster, less accurate)
+  thinking: "extended"
+
+  # Budget for reasoning tokens when thinking is extended
+  thinking_budget: 4096
+
+  # Max output tokens
+  max_tokens: 8192
+
+  # API key — prefer MODEL_API_KEY env var over this field
+  api_key: ""
+
+  # Temperature for reasoning calls (low = deterministic)
+  temperature: 0.1
+
+# ── Sessions (multi-identity for IDOR differential) ──────────────────────────
+sessions:
+  default:
+    cookies: {}
+    headers: {}
+
+  userA:
+    cookies: {}
+    headers:
+      X-Tenant: "A"
+
+  userB:
+    cookies: {}
+    headers:
+      X-Tenant: "B"
+
+# ── OAST (Out-of-Band Application Security Testing) ─────────────────────────
+oast:
+  enabled: true
+  domain: "o.nightfall.local"         # wildcard DNS zone you control
+  server: "0.0.0.0"                   # bind address
+  dns_port: 5353                      # DNS listener port
+  http_port: 8089                     # HTTP callback port
+  poll_timeout: 8                     # seconds to wait for OOB callback
+
+# ── Crawler ──────────────────────────────────────────────────────────────────
+crawler:
+  max_depth: 5                        # maximum crawl depth from seed URL
+  max_pages: 500                      # maximum pages to crawl
+  respect_robots: false               # pentest mode: ignore robots.txt
+  user_agent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 NIGHTFALL/1.0"
+  headless: true                      # Playwright headless mode
+
+# ── Reporting ────────────────────────────────────────────────────────────────
+report:
+  output_dir: "reports"
+  formats:
+    - "markdown"
+    - "sarif"
+  include_evidence: true              # embed request/response in report
+  include_remediation: true           # include fix guidance
+
+# ── Logging ──────────────────────────────────────────────────────────────────
+logging:
+  level: "INFO"                       # DEBUG | INFO | WARNING | ERROR
+  file: "nightfall.log"
+  structured: true                    # JSON structured logging

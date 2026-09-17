@@ -1,0 +1,341 @@
+"""Falcon MAG Framework - Report Generator (JSON + Markdown + Excel)"""
+import json
+import os
+from datetime import datetime
+from pathlib import Path
+from typing import List, Dict, Any
+
+FRAMEWORK_DIR = Path(__file__).resolve().parent.parent
+
+
+# ============================================================
+# Findings extraction
+# ============================================================
+def extract_findings(results: dict) -> List[dict]:
+    """Extract all findings from all modules into a unified list."""
+    findings = []
+
+    # XSS
+    for v in results.get("xss_scanner", {}).get("vulnerable", []):
+        findings.append({
+            "severity": "high",
+            "title": f"Reflected XSS in '{v.get('param', '')}'",
+            "description": f"Parameter '{v.get('param')}' reflects user input without encoding.",
+            "evidence": f"Payload: {v.get('payload')}\nContext: {v.get('context', '')[:200]}",
+            "url": v.get("url", ""),
+            "category": "XSS",
+        })
+
+    # SQLi
+    for v in results.get("sqli_scanner", {}).get("vulnerable", []):
+        findings.append({
+            "severity": "critical",
+            "title": f"SQL Injection in '{v.get('param', '')}' ({v.get('type', '')})",
+            "description": f"Parameter '{v.get('param')}' is vulnerable to SQL injection.",
+            "evidence": f"Payload: {v.get('payload')}\nType: {v.get('type')}",
+            "url": v.get("url", ""),
+            "category": "SQLi",
+        })
+
+    # NoSQL
+    for v in results.get("nosql_scanner", {}).get("vulnerable", []):
+        findings.append({
+            "severity": "high",
+            "title": f"NoSQL Injection in '{v.get('param', '')}'",
+            "description": "NoSQL operator injection detected.",
+            "evidence": f"Payload: {v.get('payload')}",
+            "url": v.get("url", ""),
+            "category": "NoSQL",
+        })
+
+    # CSRF
+    csrf = results.get("csrf_checker", {})
+    for form in csrf.get("vulnerable_forms", []):
+        findings.append({
+            "severity": "medium",
+            "title": "CSRF: Missing token in form",
+            "description": f"Form at {form.get('action')} has no anti-CSRF token.",
+            "evidence": f"Action: {form.get('action')}\nMethod: {form.get('method')}",
+            "url": form.get("action", ""),
+            "category": "CSRF",
+        })
+
+    # Clickjacking
+    cj = results.get("clickjacking", {})
+    if cj.get("vulnerable"):
+        findings.append({
+            "severity": "medium",
+            "title": "Clickjacking: missing X-Frame-Options / CSP frame-ancestors",
+            "description": "Page can be embedded in an iframe.",
+            "evidence": f"X-Frame-Options: {cj.get('x_frame_options', 'MISSING')}\nCSP: {cj.get('csp', 'MISSING')}",
+            "url": results.get("target", ""),
+            "category": "Clickjacking",
+        })
+
+    # CORS
+    cors = results.get("cors_checker", {})
+    if cors.get("vulnerable"):
+        findings.append({
+            "severity": "high",
+            "title": "CORS Misconfiguration",
+            "description": "Origin is reflected with credentials allowed.",
+            "evidence": json.dumps(cors.get("tests", []), ensure_ascii=False)[:500],
+            "url": results.get("target", ""),
+            "category": "CORS",
+        })
+
+    # JS Secrets
+    for s in results.get("js_analyzer", {}).get("secrets", []):
+        findings.append({
+            "severity": "high",
+            "title": f"Hardcoded secret in JS: {s.get('type')}",
+            "description": f"Secret found in {s.get('file')}",
+            "evidence": f"Value preview: {s.get('value', '')[:100]}",
+            "url": s.get("file", ""),
+            "category": "Secrets",
+        })
+
+    # Missing Security Headers (Info)
+    fp = results.get("fingerprint", {})
+    for h in fp.get("missing_headers", []):
+        findings.append({
+            "severity": "low",
+            "title": f"Missing security header: {h}",
+            "description": f"The HTTP response is missing the '{h}' header.",
+            "evidence": f"Header '{h}' not present in response",
+            "url": results.get("target", ""),
+            "category": "Headers",
+        })
+
+    # TLS weak protocols
+    tls = results.get("tls_checker", {})
+    for proto in tls.get("weak_protocols", []):
+        findings.append({
+            "severity": "medium",
+            "title": f"Weak TLS protocol: {proto}",
+            "description": f"Server supports deprecated protocol {proto}.",
+            "evidence": f"Protocol: {proto}",
+            "url": results.get("target", ""),
+            "category": "TLS",
+        })
+
+    # Open ports
+    for port in results.get("port_scanner", {}).get("open_ports", []):
+        sev = "info"
+        if port.get("port") in (22, 3306, 5432, 6379, 27017):
+            sev = "medium"
+        findings.append({
+            "severity": sev,
+            "title": f"Open port: {port.get('port')} ({port.get('service', '')})",
+            "description": f"Port {port.get('port')} is open.",
+            "evidence": f"{port.get('service')} {port.get('version', '')}",
+            "url": results.get("target", ""),
+            "category": "Ports",
+        })
+
+    # Subdomains found
+    for s in results.get("subdomain_enum", {}).get("found", []):
+        findings.append({
+            "severity": "info",
+            "title": f"Subdomain discovered: {s}",
+            "description": "Subdomain found via enumeration.",
+            "evidence": s,
+            "url": results.get("target", ""),
+            "category": "Subdomains",
+        })
+
+    # CVEs
+    for cve in results.get("cve_lookup", {}).get("cves", []):
+        findings.append({
+            "severity": cve.get("severity", "info"),
+            "title": f"{cve.get('id', 'CVE')}: {cve.get('tech', '')}",
+            "description": cve.get("description", ""),
+            "evidence": f"CVSS: {cve.get('cvss', 'N/A')}",
+            "url": results.get("target", ""),
+            "category": "CVE",
+        })
+
+    # Path discovery (real paths only)
+    for p in results.get("path_discovery", {}).get("real", []):
+        if p.get("status") in (200, 401, 403, 301, 302):
+            findings.append({
+                "severity": "info",
+                "title": f"Interesting path: {p.get('path')} ({p.get('status')})",
+                "description": f"Path returned HTTP {p.get('status')}",
+                "evidence": f"Size: {p.get('size')} bytes",
+                "url": results.get("target", "") + p.get("path", ""),
+                "category": "Paths",
+            })
+
+    return findings
+
+
+# ============================================================
+# JSON
+# ============================================================
+def save_json(results: dict, base_path: str) -> str:
+    path = base_path + ".json"
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(results, f, indent=2, ensure_ascii=False, default=str)
+    return path
+
+
+# ============================================================
+# Markdown
+# ============================================================
+def save_markdown(results: dict, findings: List[dict], base_path: str,
+                  target: str) -> str:
+    """Generate a Markdown report."""
+    path = base_path + ".md"
+    lines = []
+    lines.append(f"# 🦅 Falcon MAG — Security Assessment Report\n")
+    lines.append(f"- **Target:** `{target}`")
+    lines.append(f"- **Generated:** {results.get('timestamp', '')}")
+    lines.append(f"- **Duration:** {results.get('duration', 0)}s")
+    lines.append(f"- **Requests:** {results.get('http_requests_count', 0)}")
+    lines.append(f"- **Modules Run:** {', '.join(results.get('modules_run', []))}")
+    lines.append("")
+    lines.append("---\n")
+
+    # Summary
+    by_sev = {}
+    for f in findings:
+        by_sev[f["severity"]] = by_sev.get(f["severity"], 0) + 1
+
+    lines.append("## Executive Summary\n")
+    if not findings:
+        lines.append("No vulnerabilities confirmed.\n")
+    else:
+        lines.append(f"**Total findings: {len(findings)}**\n")
+        for sev in ["critical", "high", "medium", "low", "info"]:
+            if sev in by_sev:
+                lines.append(f"- {sev.upper()}: {by_sev[sev]}")
+        lines.append("")
+
+    lines.append("---\n")
+
+    # Findings
+    lines.append("## Findings\n")
+    for i, f in enumerate(findings, 1):
+        lines.append(f"### {i}. [{f['severity'].upper()}] {f['title']}\n")
+        lines.append(f"**Category:** {f.get('category', 'N/A')}\n")
+        lines.append(f"**URL:** `{f.get('url', '')}`\n")
+        lines.append(f"**Description:**\n{f.get('description', '')}\n")
+        lines.append(f"**Evidence:**\n```\n{f.get('evidence', '')}\n```\n")
+
+    lines.append("---\n")
+    lines.append("## Appendix\n")
+    lines.append("### Fingerprint\n")
+    fp = results.get("fingerprint", {})
+    lines.append(f"- Server: `{fp.get('server', 'N/A')}`")
+    lines.append(f"- Powered By: `{fp.get('powered_by', 'N/A')}`")
+    lines.append(f"- Technologies: {', '.join(fp.get('technologies', []))}")
+
+    with open(path, "w", encoding="utf-8") as fh:
+        fh.write("\n".join(lines))
+    return path
+
+
+# ============================================================
+# Excel
+# ============================================================
+def save_excel(results: dict, findings: List[dict], base_path: str,
+               target: str) -> str:
+    """Generate an Excel report."""
+    try:
+        from openpyxl import Workbook
+        from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
+        from openpyxl.utils import get_column_letter
+    except ImportError:
+        return ""
+
+    path = base_path + ".xlsx"
+    wb = Workbook()
+
+    # ----- Sheet 1: Summary -----
+    ws = wb.active
+    ws.title = "Summary"
+    ws.sheet_view.rightToLeft = True
+
+    title_font = Font(name="Segoe UI", size=16, bold=True, color="DC2626")
+    header_font = Font(name="Segoe UI", size=11, bold=True, color="FFFFFF")
+    normal = Font(name="Segoe UI", size=10)
+    header_fill = PatternFill("solid", fgColor="0A0014")
+
+    ws["A1"] = "Falcon MAG - Security Report"
+    ws["A1"].font = title_font
+    ws.merge_cells("A1:B1")
+
+    rows = [
+        ("Target", target),
+        ("Generated", results.get("timestamp", "")),
+        ("Duration (s)", results.get("duration", 0)),
+        ("Requests", results.get("http_requests_count", 0)),
+        ("Total Findings", len(findings)),
+    ]
+    for i, (k, v) in enumerate(rows, 3):
+        ws.cell(i, 1, k).font = Font(name="Segoe UI", size=10, bold=True)
+        ws.cell(i, 2, str(v)).font = normal
+
+    ws.column_dimensions["A"].width = 20
+    ws.column_dimensions["B"].width = 60
+
+    # ----- Sheet 2: Findings -----
+    ws2 = wb.create_sheet("Findings")
+    ws2.sheet_view.rightToLeft = True
+    headers = ["#", "Severity", "Category", "Title", "URL", "Evidence"]
+    for c, h in enumerate(headers, 1):
+        cell = ws2.cell(1, c, h)
+        cell.font = header_font
+        cell.fill = header_fill
+        cell.alignment = Alignment(horizontal="center")
+
+    for i, f in enumerate(findings, 1):
+        row = i + 1
+        ws2.cell(row, 1, i).font = normal
+        ws2.cell(row, 2, f["severity"]).font = normal
+        ws2.cell(row, 3, f.get("category", "")).font = normal
+        ws2.cell(row, 4, f["title"]).font = normal
+        ws2.cell(row, 5, f.get("url", "")).font = normal
+        ws2.cell(row, 6, f.get("evidence", "")[:500]).font = normal
+
+    widths = [5, 10, 14, 50, 45, 60]
+    for c, w in enumerate(widths, 1):
+        ws2.column_dimensions[get_column_letter(c)].width = w
+    ws2.freeze_panes = "A2"
+
+    wb.save(path)
+    return path
+
+
+# ============================================================
+# Main entry
+# ============================================================
+def generate_reports(results: dict, config: dict) -> Dict[str, str]:
+    """Generate all requested report formats."""
+    output_dir = Path(config.get("output", {}).get("directory", "output/"))
+    if not output_dir.is_absolute():
+        output_dir = FRAMEWORK_DIR / output_dir
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+    base = str(output_dir / f"scan_{ts}")
+
+    findings = extract_findings(results)
+    results["findings"] = findings
+
+    target = config.get("target", "")
+    paths = {}
+
+    fmt = config.get("output", {}).get("format", "all")
+
+    if fmt in ("json", "all"):
+        paths["json"] = save_json(results, base)
+    if fmt in ("md", "all"):
+        paths["md"] = save_markdown(results, findings, base, target)
+    if fmt in ("excel", "all"):
+        p = save_excel(results, findings, base, target)
+        if p:
+            paths["excel"] = p
+
+    return paths

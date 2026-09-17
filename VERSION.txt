@@ -1,0 +1,2 @@
+v2.0-snapshot-2026-09-17 
+Snapshot before DashboardV2 development. 

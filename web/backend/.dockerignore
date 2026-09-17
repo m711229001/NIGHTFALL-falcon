@@ -1,0 +1,17 @@
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+venv/
+env/
+.git/
+.gitignore
+*.db
+*.log
+reports/
+bug_bounty_reports/
+exports/
+node_modules/
+.vscode/
+.idea/
+*.md

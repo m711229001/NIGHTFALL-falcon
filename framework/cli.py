@@ -302,7 +302,8 @@ def _route_modules_by_tech(detected_techs: list, currently_selected: list) -> li
 def _run_scan(target: str, module_names: list, config_path: str = None,
               output_override: str = None, quiet: bool = False,
               auth_kwargs: dict = None, http_kwargs: dict = None,
-              parallel: int = 1):
+              parallel: int = 1,
+              enable_ai: bool = True, ai_max_findings: int = 20):
     """Core scan engine: feeders first (sequential), then parallel batch."""
     start_time = time.time()
 
@@ -400,6 +401,61 @@ def _run_scan(target: str, module_names: list, config_path: str = None,
             results["module_results"][m_name] = m_data
 
     # ==========================================================
+    # AI Enrichment (ADDED 2026-09-19)
+    # ==========================================================
+    if enable_ai:
+        try:
+            from core.report import extract_findings
+            from core.ai_analyzer import (
+                _is_available as _ai_available,
+                analyze_all_findings,
+                generate_executive_summary,
+            )
+
+            if _ai_available():
+                if not quiet:
+                    log.info("[AI] Extracting findings for analysis...")
+
+                findings_for_ai = extract_findings(results)
+
+                if findings_for_ai:
+                    if not quiet:
+                        log.info(f"[AI] Analyzing up to {ai_max_findings} findings...")
+
+                    enriched = analyze_all_findings(
+                        findings_for_ai,
+                        max_findings=ai_max_findings,
+                        skip_info=True,
+                    )
+
+                    results["_ai_enriched"] = enriched
+
+                    try:
+                        summary = generate_executive_summary(results, enriched)
+                        if summary:
+                            results["_ai_summary"] = summary
+                            results["ai_summary"] = summary
+                            if not quiet:
+                                log.info("[AI] Executive summary generated")
+                        else:
+                            if not quiet:
+                                log.warning("[AI] Summary is empty")
+                    except Exception as e:
+                        log.warning(f"[AI] Executive summary failed: {e}")
+
+                    analyzed = sum(1 for f in enriched if f.get("ai_analyzed"))
+                    if not quiet:
+                        log.info(f"[AI] Done: {analyzed} findings enriched")
+                else:
+                    if not quiet:
+                        log.info("[AI] No findings to analyze")
+            else:
+                if not quiet:
+                    log.warning("[AI] Not available (no API key configured)")
+        except Exception as e:
+            log.exception(f"[AI] Enrichment failed: {e}")
+
+    # ==========================================================
     # Reports
     # ==========================================================
     total_elapsed = time.time() - start_time
@@ -448,6 +504,8 @@ def scan(
     insecure: bool = typer.Option(False, "--insecure", "-k", help="Skip SSL verification."),
     profile: str = typer.Option(None, "--profile", "-P", help="Use saved login profile."),
     totp_secret: str = typer.Option(None, "--totp-secret", help="TOTP secret (base32) for 2FA."),
+    no_ai: bool = typer.Option(False, "--no-ai", help="Disable AI analysis after scan."),
+    ai_max: int = typer.Option(20, "--ai-max", help="Max findings to analyze with AI (default: 20)."),
 ):
     """Run a security scan against TARGET."""
     module_list = None

@@ -11,6 +11,21 @@ FRAMEWORK_DIR = Path(__file__).resolve().parent.parent
 # ============================================================
 # Findings extraction
 # ============================================================
+def _get_module_result(results: dict, module_name: str) -> dict:
+    """Get a module's result from either flat or nested (module_results) structure."""
+    # Try nested first (actual cli.py structure)
+    mr = results.get("module_results")
+    if isinstance(mr, dict) and module_name in mr:
+        val = mr[module_name]
+        if isinstance(val, dict):
+            return val
+    # Fallback: flat (legacy)
+    val = results.get(module_name)
+    if isinstance(val, dict):
+        return val
+    return {}
+
+
 def extract_findings(results: dict) -> List[dict]:
     """Extract all findings from all modules into a unified list.
 
@@ -39,7 +54,7 @@ def extract_findings(results: dict) -> List[dict]:
     # ==========================================================
     # XSS
     # ==========================================================
-    for v in results.get("xss_scanner", {}).get("vulnerable", []):
+    for v in _get_module_result(results, "xss_scanner").get("vulnerable", []):
         primary, original, injected = _pick_urls(v)
         findings.append({
             "severity": "high",
@@ -61,7 +76,7 @@ def extract_findings(results: dict) -> List[dict]:
     # ==========================================================
     # SQLi
     # ==========================================================
-    for v in results.get("sqli_scanner", {}).get("vulnerable", []):
+    for v in _get_module_result(results, "sqli_scanner").get("vulnerable", []):
         primary, original, injected = _pick_urls(v)
         findings.append({
             "severity": "critical",
@@ -82,7 +97,7 @@ def extract_findings(results: dict) -> List[dict]:
     # ==========================================================
     # NoSQL
     # ==========================================================
-    for v in results.get("nosql_scanner", {}).get("vulnerable", []):
+    for v in _get_module_result(results, "nosql_scanner").get("vulnerable", []):
         primary, original, injected = _pick_urls(v)
         findings.append({
             "severity": "high",
@@ -101,7 +116,7 @@ def extract_findings(results: dict) -> List[dict]:
     # ==========================================================
     # CSRF
     # ==========================================================
-    csrf = results.get("csrf_checker", {})
+    csrf = _get_module_result(results, "csrf_checker")
     for form in csrf.get("vulnerable_forms", []):
         action = form.get("action", "")
         findings.append({
@@ -122,7 +137,7 @@ def extract_findings(results: dict) -> List[dict]:
     # ==========================================================
     # Clickjacking
     # ==========================================================
-    cj = results.get("clickjacking", {})
+    cj = _get_module_result(results, "clickjacking")
     if cj.get("vulnerable"):
         url = cj.get("url", results.get("target", ""))
         findings.append({
@@ -141,7 +156,7 @@ def extract_findings(results: dict) -> List[dict]:
         })
 
     # Cookies - vulnerable is a LIST of findings
-    for v in results.get("cookies_checker", {}).get("vulnerable", []):
+    for v in _get_module_result(results, "cookies_checker").get("vulnerable", []):
         url = v.get("url", results.get("target", ""))
         findings.append({
             "severity": v.get("severity", "low"),
@@ -157,7 +172,7 @@ def extract_findings(results: dict) -> List[dict]:
         })
 
     # Rate Limit - vulnerable is a LIST of findings
-    for v in results.get("rate_limit_test", {}).get("vulnerable", []):
+    for v in _get_module_result(results, "rate_limit_test").get("vulnerable", []):
         url = v.get("url", results.get("target", ""))
         findings.append({
             "severity": v.get("severity", "low"),
@@ -173,7 +188,7 @@ def extract_findings(results: dict) -> List[dict]:
         })
 
     # DOM XSS - vulnerable is a LIST of findings
-    for v in results.get("dom_xss_scanner", {}).get("vulnerable", []):
+    for v in _get_module_result(results, "dom_xss_scanner").get("vulnerable", []):
         url = v.get("url", results.get("target", ""))
         findings.append({
             "severity": v.get("severity", "high"),
@@ -190,7 +205,7 @@ def extract_findings(results: dict) -> List[dict]:
 
     # ==========================================================
     # CORS - vulnerable is a LIST of findings
-    cors = results.get("cors_checker", {})
+    cors = _get_module_result(results, "cors_checker")
     cors_vuln = cors.get("vulnerable", [])
     if isinstance(cors_vuln, dict):
         cors_vuln = [cors_vuln]
@@ -216,7 +231,7 @@ def extract_findings(results: dict) -> List[dict]:
     # ==========================================================
     # JS Secrets
     # ==========================================================
-    for s in results.get("js_analyzer", {}).get("secrets", []):
+    for s in _get_module_result(results, "js_analyzer").get("secrets", []):
         file_url = s.get("file", "")
         findings.append({
             "severity": "high",
@@ -235,7 +250,7 @@ def extract_findings(results: dict) -> List[dict]:
     # ==========================================================
     # Missing Security Headers (Info)
     # ==========================================================
-    fp = results.get("fingerprint", {})
+    fp = _get_module_result(results, "fingerprint")
     for h in fp.get("missing_headers", []):
         url = fp.get("target", results.get("target", ""))
         findings.append({
@@ -254,7 +269,7 @@ def extract_findings(results: dict) -> List[dict]:
     # ==========================================================
     # TLS weak protocols
     # ==========================================================
-    tls = results.get("tls_checker", {})
+    tls = _get_module_result(results, "tls_checker")
     for proto in tls.get("weak_protocols", []):
         url = tls.get("target", results.get("target", ""))
         findings.append({
@@ -274,7 +289,7 @@ def extract_findings(results: dict) -> List[dict]:
     # ==========================================================
     # Open ports
     # ==========================================================
-    for port in results.get("port_scanner", {}).get("open_ports", []):
+    for port in _get_module_result(results, "port_scanner").get("open_ports", []):
         host = results.get("target", "")
         sev = "info"
         if port.get("port") in (22, 3306, 5432, 6379, 27017):
@@ -297,7 +312,7 @@ def extract_findings(results: dict) -> List[dict]:
     # ==========================================================
     # Open Redirect
     # ==========================================================
-    for v in results.get("open_redirect", {}).get("vulnerable", []):
+    for v in _get_module_result(results, "open_redirect").get("vulnerable", []):
         primary, original, injected = _pick_urls(v)
         findings.append({
             "severity": "medium",
@@ -316,7 +331,7 @@ def extract_findings(results: dict) -> List[dict]:
     # ==========================================================
     # Path Traversal
     # ==========================================================
-    for v in results.get("path_traversal", {}).get("vulnerable", []):
+    for v in _get_module_result(results, "path_traversal").get("vulnerable", []):
         primary, original, injected = _pick_urls(v)
         findings.append({
             "severity": "high",
@@ -335,7 +350,7 @@ def extract_findings(results: dict) -> List[dict]:
     # ==========================================================
     # SSRF
     # ==========================================================
-    for v in results.get("ssrf_scanner", {}).get("vulnerable", []):
+    for v in _get_module_result(results, "ssrf_scanner").get("vulnerable", []):
         primary, original, injected = _pick_urls(v)
         findings.append({
             "severity": "high",
@@ -354,7 +369,7 @@ def extract_findings(results: dict) -> List[dict]:
     # ==========================================================
     # IDOR
     # ==========================================================
-    for v in results.get("idor_scanner", {}).get("vulnerable", []):
+    for v in _get_module_result(results, "idor_scanner").get("vulnerable", []):
         primary, original, injected = _pick_urls(v)
         findings.append({
             "severity": "high",
@@ -374,7 +389,7 @@ def extract_findings(results: dict) -> List[dict]:
     # ==========================================================
     # Prototype Pollution
     # ==========================================================
-    for v in results.get("prototype_pollution", {}).get("vulnerable", []):
+    for v in _get_module_result(results, "prototype_pollution").get("vulnerable", []):
         primary, original, injected = _pick_urls(v)
         findings.append({
             "severity": "high",
@@ -393,7 +408,7 @@ def extract_findings(results: dict) -> List[dict]:
     # ==========================================================
     # HTTP Methods
     # ==========================================================
-    for m in results.get("http_methods", {}).get("dangerous", []):
+    for m in _get_module_result(results, "http_methods").get("dangerous", []):
         url = results.get("target", "")
         findings.append({
             "severity": "medium",
@@ -412,7 +427,7 @@ def extract_findings(results: dict) -> List[dict]:
     # ==========================================================
     # Cookies
     # ==========================================================
-    for c in results.get("cookies_checker", {}).get("insecure", []):
+    for c in _get_module_result(results, "cookies_checker").get("insecure", []):
         url = results.get("target", "")
         missing = ", ".join(c.get("missing_flags", []))
         findings.append({
@@ -433,7 +448,7 @@ def extract_findings(results: dict) -> List[dict]:
     # ==========================================================
     # Subdomains found
     # ==========================================================
-    for s in results.get("subdomain_enum", {}).get("found", []):
+    for s in _get_module_result(results, "subdomain_enum").get("found", []):
         url = results.get("target", "")
         findings.append({
             "severity": "info",
@@ -451,7 +466,7 @@ def extract_findings(results: dict) -> List[dict]:
     # ==========================================================
     # CVEs
     # ==========================================================
-    for cve in results.get("cve_lookup", {}).get("cves", []):
+    for cve in _get_module_result(results, "cve_lookup").get("cves", []):
         url = results.get("target", "")
         findings.append({
             "severity": cve.get("severity", "info"),
@@ -470,7 +485,7 @@ def extract_findings(results: dict) -> List[dict]:
     # ==========================================================
     # Path discovery (real paths only)
     # ==========================================================
-    for p in results.get("path_discovery", {}).get("real_paths", []):
+    for p in _get_module_result(results, "path_discovery").get("real_paths", []):
         if p.get("status") in (200, 201, 202, 204, 301, 302, 307, 308, 401, 403, 500):
             full_url = p.get("url") or (results.get("target", "").rstrip("/") + p.get("path", ""))
             findings.append({
@@ -695,7 +710,7 @@ def save_markdown(results: dict, findings: List[dict], base_path: str,
     # === Appendix ===
     lines.append("## 📎 ملحق\n")
     lines.append("### بصمة الهدف\n")
-    fp = results.get("fingerprint", {})
+    fp = _get_module_result(results, "fingerprint")
     lines.append(f"- **Server:** `{fp.get('server', 'N/A')}`")
     lines.append(f"- **Powered By:** `{fp.get('powered_by', 'N/A')}`")
     lines.append(f"- **Technologies:** {', '.join(fp.get('technologies', []))}")
@@ -843,8 +858,13 @@ def generate_reports(results: dict, config: dict) -> Dict[str, str]:
     ts = datetime.now().strftime("%Y%m%d_%H%M%S")
     base = str(output_dir / f"scan_{ts}")
 
-    findings = extract_findings(results)
-    results["findings"] = findings
+    # Reuse AI-enriched findings if present, otherwise extract fresh
+    if results.get("_ai_enriched"):
+        findings = results["_ai_enriched"]
+        results["findings"] = findings
+    else:
+        findings = extract_findings(results)
+        results["findings"] = findings
 
     target = config.get("target", "")
     paths = {}

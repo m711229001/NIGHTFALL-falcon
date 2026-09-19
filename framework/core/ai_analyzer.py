@@ -23,6 +23,8 @@ UPDATED 2026-09-19:
 import os
 import json
 import time
+import hashlib
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import List, Dict, Optional
 from core.logger import get_logger
 
@@ -34,6 +36,29 @@ except ImportError:
     AI_CONFIG_STORE_AVAILABLE = False
 
 log = get_logger("ai")
+
+# ADDED 2026-09-20: AI response cache
+_AI_CACHE = {}
+_AI_CACHE_LOCK = None
+try:
+    import threading
+    _AI_CACHE_LOCK = threading.Lock()
+except Exception:
+    pass
+
+
+def _finding_hash(finding: dict) -> str:
+    """Create a stable hash for a finding (for caching)."""
+    key_parts = [
+        finding.get("title", ""),
+        finding.get("category", ""),
+        finding.get("url", ""),
+        finding.get("param", ""),
+        str(finding.get("payload", ""))[:100],
+        finding.get("severity", ""),
+    ]
+    h = hashlib.md5("|".join(key_parts).encode("utf-8")).hexdigest()
+    return h
 
 try:
     import httpx
@@ -291,6 +316,21 @@ SYSTEM_PROMPT = """أنت خبير أمن سيبراني محترف (OSCP, OSWE,
 
 def analyze_finding(finding: dict) -> dict:
     """Enrich one finding with AI analysis."""
+    # Check cache first
+    fhash = _finding_hash(finding)
+    if _AI_CACHE_LOCK:
+        with _AI_CACHE_LOCK:
+            if fhash in _AI_CACHE:
+                log.debug(f"Cache hit: {fhash[:8]}")
+                cached = _AI_CACHE[fhash].copy()
+                cached.update({k: v for k, v in finding.items() if not k.startswith("ai_")})
+                return cached
+    else:
+        if fhash in _AI_CACHE:
+            cached = _AI_CACHE[fhash].copy()
+            cached.update({k: v for k, v in finding.items() if not k.startswith("ai_")})
+            return cached
+
     title = finding.get("title", "")
     category = finding.get("category", "")
     url = finding.get("url", "")
@@ -347,6 +387,14 @@ def analyze_finding(finding: dict) -> dict:
     finding["ai_references"] = ai_data.get("references", [])
     finding["ai_analyzed"] = True
 
+    # Save to cache
+    if finding.get("ai_analyzed"):
+        if _AI_CACHE_LOCK:
+            with _AI_CACHE_LOCK:
+                _AI_CACHE[fhash] = finding.copy()
+        else:
+            _AI_CACHE[fhash] = finding.copy()
+
     return finding
 
 
@@ -374,17 +422,30 @@ def analyze_all_findings(findings: List[dict],
 
     to_analyze = to_analyze[:max_findings]
 
-    log.info("AI analyzing " + str(len(to_analyze)) + " findings...")
+    total = len(to_analyze)
+    log.info(f"AI analyzing {total} findings (parallel x3)...")
 
-    for n, (idx, f) in enumerate(to_analyze, 1):
-        title = f.get("title", "")[:70]
-        log.info("  [" + str(n) + "/" + str(len(to_analyze)) + "] " + title)
+    # Parallel analysis (3 workers)
+    def _work(item):
+        idx, f = item
         try:
-            enriched = analyze_finding(f)
-            findings[idx] = enriched
+            return idx, analyze_finding(f), None
         except Exception as e:
-            log.warning("  Failed: " + str(e))
-        time.sleep(0.3)
+            return idx, f, e
+
+    completed = 0
+    with ThreadPoolExecutor(max_workers=3) as pool:
+        futures = {pool.submit(_work, item): item for item in to_analyze}
+        for future in as_completed(futures):
+            idx, result, err = future.result()
+            completed += 1
+            title = result.get("title", "")[:60]
+            if err:
+                log.warning(f"  [{completed}/{total}] FAILED: {title} -> {err}")
+            else:
+                log.info(f"  [{completed}/{total}] {title}")
+            findings[idx] = result
+    
 
     analyzed_count = sum(1 for f in findings if f.get("ai_analyzed"))
     log.info("AI analysis complete: " + str(analyzed_count) + " findings enriched")

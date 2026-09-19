@@ -257,3 +257,7 @@ framework/config/*.tmp
 # Temp
 _git_ai.py
 _git_*.py
+# Allow framework tests
+!framework/tests/
+!framework/tests/**
+

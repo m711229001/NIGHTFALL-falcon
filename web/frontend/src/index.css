@@ -1,70 +1,11 @@
 @import "tailwindcss";
 
-@keyframes eye-blink {
-  0% { opacity: 0; transform: scale(0.5); }
-  10% { opacity: 1; transform: scale(1); }
-  80% { opacity: 1; transform: scale(1); }
-  90% { opacity: 0.3; }
-  100% { opacity: 0; transform: scale(0.5); }
-}
-
-@keyframes flicker {
-  0%, 100% { opacity: 1; filter: brightness(1.2); }
-  42% { opacity: 0.98; filter: brightness(1.1); }
-  43% { opacity: 0.7; filter: brightness(0.9); }
-  45% { opacity: 1; filter: brightness(1.3); }
-  70% { opacity: 0.95; filter: brightness(1.1); }
-  72% { opacity: 0.6; filter: brightness(0.8); }
-  74% { opacity: 1; filter: brightness(1.4); }
-}
-
-@keyframes float-up {
-  0% { transform: translateY(0) translateX(0); opacity: 0; }
-  10% { opacity: 1; }
-  90% { opacity: 1; }
-  100% { transform: translateY(-110vh) translateX(20px); opacity: 0; }
-}
-
-@keyframes glitch-1 {
-  0%, 100% { transform: translate(0); opacity: 0; }
-  20% { transform: translate(-2px, 2px); opacity: 0.8; }
-  40% { transform: translate(-2px, -2px); opacity: 0.6; }
-  60% { transform: translate(2px, 2px); opacity: 0.7; }
-  80% { transform: translate(2px, -2px); opacity: 0.5; }
-}
-
-@keyframes glitch-2 {
-  0%, 100% { transform: translate(0); opacity: 0; }
-  25% { transform: translate(2px, -2px); opacity: 0.7; }
-  50% { transform: translate(-2px, 2px); opacity: 0.5; }
-  75% { transform: translate(2px, 2px); opacity: 0.8; }
-}
-
-@keyframes blood-drip {
-  0%, 100% { transform: translateY(-100%); opacity: 0; }
-  50% { transform: translateY(0%); opacity: 1; }
-}
-
-.animate-flicker { animation: flicker 4s infinite; }
-.animate-float-up { animation: float-up linear infinite; }
-.animate-glitch-1 { animation: glitch-1 3s infinite; }
-.animate-glitch-2 { animation: glitch-2 3s infinite; }
-.animate-eye-blink { animation: eye-blink ease-in-out forwards; }
-
-* {
-  font-family: "Segoe UI", "Tahoma", "Cairo", system-ui, sans-serif;
+/* Global reset + base */
+html, body, #root {
+  min-height: 100vh;
 }
 
 body {
   margin: 0;
-  background: #000;
-  color: #d4c896;
-  min-height: 100vh;
-  overflow-x: hidden;
+  font-family: 'Inter', 'Segoe UI', system-ui, sans-serif;
 }
-
-[dir="rtl"] { text-align: right; }
-
-.glow-gold { box-shadow: 0 0 40px rgba(255, 215, 0, 0.4), inset 0 0 30px rgba(255, 215, 0, 0.05); }
-.text-gold { color: #FFD700; text-shadow: 0 0 15px #FFD700, 0 0 30px #DAA520; }
-.border-eerie { border-color: rgba(139, 105, 20, 0.5); }

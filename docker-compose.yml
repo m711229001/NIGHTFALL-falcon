@@ -1,49 +1,79 @@
-version: '3.9'
+# ============================================================
+# Falcon MAG — Full Platform Stack (with Xvfb + VNC)
+# ============================================================
+# Run:   docker compose up --build -d
+# Logs:  docker compose logs -f backend
+# Stop:  docker compose down
+# Reset: docker compose down -v
+#
+# Frontend:  http://localhost
+# Backend:   http://localhost:8888
+# API Docs:  http://localhost:8888/docs
+# noVNC:     http://localhost:6080/vnc.html
+# VNC:       localhost:5900 (RealVNC viewer)
+# ============================================================
 
 services:
   backend:
     build:
       context: ./web/backend
       dockerfile: Dockerfile
-    container_name: falcon_backend
+    image: falcon-mag-backend:latest
+    container_name: falcon-backend
     restart: unless-stopped
     ports:
-      - "8888:8888"
+      - "8888:8888"   # Backend API
+      - "5900:5900"   # VNC (native)
+      - "6080:6080"   # noVNC (HTML5)
+    env_file:
+      - .env
     environment:
-      - MODEL_API_KEY=${MODEL_API_KEY}
-      - PYTHONIOENCODING=utf-8
-      - PYTHONUTF8=1
+      APP_NAME: "Falcon MAG"
+      APP_VERSION: "1.0.0"
+      DEBUG: "false"
+      NIGHTFALL_DIR: "/app"
+      DB_PATH: "/app/falcon.db"
+      USERS_DB: "/app/users.db"
+      REPORTS_DIR: "/app/reports"
+      PYTHONUNBUFFERED: "1"
+      PLAYWRIGHT_BROWSERS_PATH: "/ms-playwright"
+      DISPLAY: ":99"
     volumes:
       - falcon_data:/app/data
-      - ./reports:/app/reports
-      - ./bug_bounty_reports:/app/bug_bounty_reports
+      - ./web/backend/reports:/app/reports
+      - ./web/backend/exports:/app/exports
+      - ./web/backend/bug_bounty_reports:/app/bug_bounty_reports
       - ./web/backend/falcon.db:/app/falcon.db
       - ./web/backend/users.db:/app/users.db
-    networks:
-      - falcon_net
+      - ./framework:/app/framework
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8888/api/health"]
+      test: ["CMD", "curl", "-fsS", "http://localhost:8888/api/health"]
       interval: 30s
       timeout: 10s
       retries: 3
+      start_period: 60s
+    networks:
+      - falcon-net
 
   frontend:
     build:
       context: ./web/frontend
       dockerfile: Dockerfile
-    container_name: falcon_frontend
+    image: falcon-mag-frontend:latest
+    container_name: falcon-frontend
     restart: unless-stopped
     ports:
       - "80:80"
     depends_on:
-      - backend
+      backend:
+        condition: service_healthy
     networks:
-      - falcon_net
+      - falcon-net
 
 volumes:
   falcon_data:
     driver: local
 
 networks:
-  falcon_net:
+  falcon-net:
     driver: bridge

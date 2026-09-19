@@ -2,7 +2,7 @@ import { useState, useEffect } from "react";
 import { useTranslation } from "react-i18next";
 import { useNavigate } from "react-router-dom";
 import Layout from "../components/Layout";
-import { scanApi } from "../api/client";
+import { scanApi } from "../../api/client";
 
 const DEFAULT_BURP_PROXY = "http://127.0.0.1:8080";
 

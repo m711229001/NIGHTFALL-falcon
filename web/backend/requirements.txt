@@ -1,0 +1,56 @@
+# ============================================================
+# Falcon MAG — Backend + Framework Dependencies
+# ============================================================
+
+# === Web Framework ===
+fastapi>=0.115.0
+uvicorn[standard]>=0.32.0
+pydantic>=2.9.0
+pydantic-settings>=2.5.0
+python-multipart>=0.0.12
+
+# === Security / Auth ===
+pyjwt[crypto]>=2.9.0
+bcrypt>=4.2.0
+passlib[bcrypt]>=1.7.4
+
+# === HTTP ===
+httpx[http2]>=0.27.0
+aiohttp>=3.10.0
+requests>=2.32.0
+
+# === Utils ===
+structlog>=24.4.0
+beautifulsoup4>=4.12.3
+lxml>=5.3.0
+colorama>=0.4.6
+
+# === Database ===
+aiosqlite>=0.20.0
+
+# === CLI Framework (Falcon MAG) ===
+typer>=0.12.0
+rich>=13.9.0
+pyyaml>=6.0.2
+python-dateutil>=2.9.0
+
+# === Browser Automation (framework/core/auth) ===
+playwright>=1.47.0
+pyotp>=2.9.0
+
+# === Reports ===
+openpyxl>=3.1.5
+reportlab>=4.2.0
+jinja2>=3.1.4
+
+# === Networking / DNS ===
+dnslib>=0.9.25
+dnspython>=2.7.0
+
+# === AI ===
+anthropic>=0.39.0
+
+# === Utils ===
+structlog>=24.4.0
+beautifulsoup4>=4.12.3
+lxml>=5.3.0

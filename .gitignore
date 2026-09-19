@@ -1,113 +1,247 @@
-# Environment
+# ================================================================
+# Falcon MAG v2 — .gitignore
+# ================================================================
+# Last updated: 2026-09-19
+# Rule: احفظ بعد كل إنجاز
+# ================================================================
+
+# ============================================================
+# === Environment (secrets) ===
+# ============================================================
 .env
-*.env
+.env.*
 .env.local
+.env.production
+.env.development
+!.env.example
 
-# Python
+# ============================================================
+# === Python ===
+# ============================================================
 __pycache__/
-*.pyc
-*.pyo
-*.pyd
-venv/
-env/
-*.egg-info/
-
-# Node
-node_modules/
-dist/
-build/
-
-# Databases
-*.db
-*.sqlite
-*.sqlite3
-
-# Reports
-reports/
-bug_bounty_reports/
-exports/
-
-# Logs
-*.log
-
-# IDE
-.vscode/
-.idea/
-*.swp
-*~
-
-# OS
-.DS_Store
-Thumbs.db
-
-# ================================
-# Falcon MAG - .gitignore
-# ================================
-
-# Database backups
-*.db.backup
-*.db.pre_merge*
-*.db.pre_merge
-
-# Backups / temp
-*.before_cleanup
-*.before_stages_fix
-*.with_http_5s
-fix_*.py
-write_*.py
-merge_*.py
-
-# Archive (local only)
-_archive/
-
-# Python
-__pycache__/
-*.pyc
-*.pyo
-*.pyd
+*.py[cod]
+*$py.class
+*.so
 .Python
+*.egg-info/
+*.egg
+.eggs/
 venv/
 .venv/
 env/
 ENV/
-*.egg-info/
-dist/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.tox/
+.coverage
+htmlcov/
 build/
+dist/
 
-# Node
+# ============================================================
+# === Node ===
+# ============================================================
 node_modules/
 npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
+pnpm-debug.log*
 .vite/
+.npm/
+.yarn/
+dist/
+build/
+.next/
+.nuxt/
+.output/
 
-# Env
-.env
-.env.local
-.env.*.local
+# ============================================================
+# === Databases (runtime) ===
+# ============================================================
+*.db
+*.db.backup
+*.db.pre_merge*
+*.db.pre_merge
+*.sqlite
+*.sqlite3
 
-# IDE
+# ============================================================
+# === Logs ===
+# ============================================================
+*.log
+logs/
+current_scan.log
+
+# ============================================================
+# === Reports / Output (runtime) ===
+# ============================================================
+framework/output/
+web/backend/reports/
+web/backend/exports/
+web/backend/bug_bounty_reports/
+reports/
+bug_bounty_reports/
+exports/
+*.xlsx
+!requirements.xlsx
+
+# ============================================================
+# === Backups (نظام صارم) ===
+# ============================================================
+*.backup
+*.backup_*
+*.bak
+*.bak2
+*.old
+*.orig
+*.broken
+*.broken_*
+*.pre_*
+*.pre_patch
+*.pre_generic
+*.pre_nafath
+*.before_*
+*.before-*
+*_before_*
+*.v2bak
+*.smsbak
+*.smsui_bak
+*.subtabs_bak
+*.authbak
+*.otpbak
+*.auth_inject.bak
+*_old
+*_old_*
+
+# ============================================================
+# === Backup directories (كاملة) ===
+# ============================================================
+*_backup_*/
+*_backup_*
+framework.backup_*/
+web/backend.backup_*/
+web/frontend/src.backup_*/
+
+# ============================================================
+# === Archive ===
+# ============================================================
+_archive/
+
+# ============================================================
+# === Patch scripts / Fix scripts ===
+# ============================================================
+_fix_*.py
+_patch_*.py
+_rebuild_*.py
+_add_*.py
+_writer.py
+_dump_*.txt
+_dump_*.py
+
+# ============================================================
+# === Runtime state ===
+# ============================================================
+current_scan.json
+current_scan.log
+*.tmp
+*.temp
+~$*
+.sesskey
+
+# ============================================================
+# === Personal profiles (لا تُرفع) ===
+# ============================================================
+framework/profiles/*.json
+profiles/
+!framework/profiles/.gitkeep
+
+# ============================================================
+# === OS ===
+# ============================================================
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+desktop.ini
+
+# ============================================================
+# === IDE ===
+# ============================================================
 .vscode/
 .idea/
 *.swp
 *.swo
+*~
+.project
+.classpath
+.settings/
 
-# OS
-.DS_Store
-Thumbs.db
-desktop.ini
-
-# Runtime
-current_scan.json
-current_scan.log
-*.log
-
-# Exports
-web/backend/exports/
-web/backend/bug_bounty_reports/
-web/backend/reports/
-
-# Test
+# ============================================================
+# === Test artifacts ===
+# ============================================================
 test_*.py
-test_*.pdf
+!tests/
 scan*.json
+vercel_full_scan.json
+demoqa_results/
+
+# ============================================================
+# === Cleanup artifacts (مؤقتة) ===
+# ============================================================
+_status_*.txt
+_full_audit.txt
+_git_status.txt
+_final_review.txt
+
+# ============================================================
+# === Files with weird names (from shell errors) ===
+# ============================================================
+0.*
+1.*
+2.*
+3.*
+4.*
+5.*
+6.*
+13.*
+24.*
+{
+{}
+{})
+setCopied(false)
+setTypes(res.data.auth_types
+Optional[dict]
+Optional[str]
+nulcd
+null
+bool
+f
+index)
+len(findings)
+severity_lines
+table
+help.txt
+list
+
+# ============================================================
+# === Junk ===
+# ============================================================
+activate.bat
+cli_content.py
+
+# ============================================================
+# === Docker backup files ===
+# ============================================================
+*.dockerignore.backup_*
+.dockerignore.backup_*
+
+# ============================================================
+# === Keep these ===
+# ============================================================
+!.gitkeep
+!.env.example
+!README.md

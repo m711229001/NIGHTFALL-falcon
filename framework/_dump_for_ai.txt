@@ -1,7 +1,0 @@
-At line:1 char:47
-+ Get-Content wordlists\paths.txt -TotalCount 30)
-+                                               ~
-Unexpected token ')' in expression or statement.
-    + CategoryInfo          : ParserError: (:) [], ParentContainsErrorRecordException
-    + FullyQualifiedErrorId : UnexpectedToken
- 

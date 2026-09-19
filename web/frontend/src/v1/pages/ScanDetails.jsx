@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { useParams, useNavigate } from "react-router-dom";
 import { useTranslation } from "react-i18next";
 import Layout from "../components/Layout";
-import client from "../api/client";
+import client from "../../api/client";
 
 const API_BASE = "http://localhost:8888";
 

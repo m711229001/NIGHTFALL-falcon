@@ -1,0 +1,85 @@
+# ================================
+# Falcon MAG — Root .dockerignore
+# ================================
+
+# === VCS ===
+.git
+.gitignore
+.gitattributes
+
+# === Backups (كلها) ===
+*.backup
+*.backup_*
+*_backup_*
+*.bak
+*.bak2
+*.old
+*.broken
+*.broken_*
+*.before_*
+*_before_*
+*_archive*
+framework.backup_*/
+web/backend.backup_*/
+web/frontend/src.backup_*/
+
+# === Python ===
+venv/
+.venv/
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+.pytest_cache/
+
+# === Node ===
+node_modules/
+.vite/
+dist/
+build/
+
+# === Databases (يُمرر عبر volume) ===
+*.db
+*.sqlite
+*.sqlite3
+
+# === Runtime ===
+*.log
+logs/
+current_scan.json
+current_scan.log
+
+# === Reports (تُمرر عبر volume) ===
+framework/output/
+web/backend/reports/
+web/backend/exports/
+web/backend/bug_bounty_reports/
+reports/
+exports/
+bug_bounty_reports/
+
+# === Profiles (personal) ===
+framework/profiles/*.json
+profiles/
+
+# === Junk / Temp ===
+_archive/
+_status_*.txt
+_full_audit.txt
+_fix_*.py
+_patch_*.py
+_rebuild_*.py
+_add_*.py
+_dump_*.txt
+*.tmp
+.DS_Store
+Thumbs.db
+
+# === Docs (لا حاجة داخل container) ===
+README.md
+CHANGELOG*.md
+SESSION_STATE.md
+STATUS.md
+VERSION.txt
+*.md
+!framework/README.md

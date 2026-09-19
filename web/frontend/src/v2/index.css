@@ -1,0 +1,116 @@
+/* ============================================================
+   Falcon MAG v2 — Tactical Edition Styles
+   ============================================================ */
+
+@import "tailwindcss";
+
+:root,
+[data-theme="dark"] {
+  --bg-primary:    #0a0e1a;
+  --bg-secondary:  #14192a;
+  --bg-tertiary:   #1e2536;
+  --bg-elevated:   #1a2030;
+  --border-color:  rgba(239, 68, 68, 0.20);
+  --border-accent: rgba(239, 68, 68, 0.40);
+  --text-primary:  #f1f5f9;
+  --text-secondary:#94a3b8;
+  --text-muted:    #64748b;
+  --accent-red:    #ef4444;
+  --accent-orange: #f97316;
+  --accent-yellow: #facc15;
+  --accent-green:  #10b981;
+  --accent-cyan:   #06b6d4;
+  --accent-purple: #a855f7;
+
+  /* متطلبات كروت المؤشرات المضافة للوضع الداكن */
+  --kpi-red-bg:          rgba(127, 29, 29, 0.40);
+  --kpi-red-border:      rgba(239, 68, 68, 0.50);
+  --kpi-orange-bg:       rgba(124, 45, 18, 0.40);
+  --kpi-orange-border:   rgba(249, 115, 22, 0.50);
+  --kpi-yellow-bg:       rgba(113, 63, 18, 0.40);
+  --kpi-yellow-border:   rgba(250, 204, 21, 0.40);
+  --kpi-green-bg:        rgba(6, 78, 59, 0.40);
+  --kpi-green-border:    rgba(16, 185, 129, 0.40);
+  --kpi-cyan-bg:         rgba(22, 78, 99, 0.40);
+  --kpi-cyan-border:     rgba(6, 182, 212, 0.40);
+}
+
+[data-theme="mid"] {
+  --bg-primary:    #1f2937;
+  --bg-secondary:  #374151;
+  --bg-tertiary:   #4b5563;
+  --bg-elevated:   #2d3748;
+  --border-color:  rgba(249, 115, 22, 0.25);
+  --border-accent: rgba(249, 115, 22, 0.45);
+  --text-primary:  #f9fafb;
+  --text-secondary:#d1d5db;
+  --text-muted:    #9ca3af;
+  --accent-red:    #f87171;
+  --accent-orange: #fb923c;
+  --accent-yellow: #fbbf24;
+  --accent-green:  #34d399;
+  --accent-cyan:   #22d3ee;
+  --accent-purple: #c084fc;
+
+  /* متطلبات كروت المؤشرات المضافة للوضع المتوسط */
+  --kpi-red-bg:          rgba(127, 29, 29, 0.50);
+  --kpi-red-border:      rgba(248, 113, 113, 0.50);
+  --kpi-orange-bg:       rgba(124, 45, 18, 0.50);
+  --kpi-orange-border:   rgba(251, 146, 60, 0.50);
+  --kpi-yellow-bg:       rgba(113, 63, 18, 0.50);
+  --kpi-yellow-border:   rgba(253, 224, 71, 0.40);
+  --kpi-green-bg:        rgba(6, 78, 59, 0.50);
+  --kpi-green-border:    rgba(52, 211, 153, 0.40);
+  --kpi-cyan-bg:         rgba(22, 78, 99, 0.50);
+  --kpi-cyan-border:     rgba(34, 211, 238, 0.40);
+}
+
+[data-theme="light"] {
+  --bg-primary:    #ffffff;
+  --bg-secondary:  #f9fafb;
+  --bg-tertiary:   #f3f4f6;
+  --bg-elevated:   #ffffff;
+  --border-color:  rgba(220, 38, 38, 0.15);
+  --border-accent: rgba(220, 38, 38, 0.30);
+  --text-primary:  #111827;
+  --text-secondary:#4b5563;
+  --text-muted:    #9ca3af;
+  --accent-red:    #dc2626;
+  --accent-orange: #ea580c;
+  --accent-yellow: #ca8a04;
+  --accent-green:  #059669;
+  --accent-cyan:   #0891b2;
+  --accent-purple: #7c3aed;
+
+  /* متطلبات كروت المؤشرات المضافة للوضع الفاتح */
+  --kpi-red-bg:          #fee2e2;
+  --kpi-red-border:      #fca5a5;
+  --kpi-orange-bg:       #ffedd5;
+  --kpi-orange-border:   #fdba74;
+  --kpi-yellow-bg:       #fef9c3;
+  --kpi-yellow-border:   #fde047;
+  --kpi-green-bg:        #d1fae5;
+  --kpi-green-border:    #6ee7b7;
+  --kpi-cyan-bg:         #cffafe;
+  --kpi-cyan-border:     #67e8f9;
+}
+
+html, body, #root {
+  min-height: 100vh;
+  background-color: var(--bg-primary);
+  color: var(--text-primary);
+  transition: background-color 0.3s ease, color 0.3s ease;
+}
+
+body {
+  font-family: 'Inter', 'Segoe UI', system-ui, sans-serif;
+}
+
+#root * {
+  transition: background-color 0.25s ease, color 0.25s ease, border-color 0.25s ease;
+}
+
+::-webkit-scrollbar { width: 8px; height: 8px; }
+::-webkit-scrollbar-track { background: var(--bg-tertiary); }
+::-webkit-scrollbar-thumb { background: var(--border-accent); border-radius: 4px; }
+::-webkit-scrollbar-thumb:hover { background: var(--accent-red); }

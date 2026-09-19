@@ -1,49 +1,30 @@
-import { BrowserRouter, Routes, Route, Navigate } from "react-router-dom";
-import { AuthProvider, useAuth } from "./context/AuthContext";
-import Login from "./pages/Login";
-import Register from "./pages/Register";
-import Dashboard from "./pages/Dashboard";
-import NewScan from "./pages/NewScan";
-import LiveMonitor from "./pages/LiveMonitor";
-import Findings from "./pages/Findings";
-import Reports from "./pages/Reports";
-import ScanDetails from "./pages/ScanDetails";
-import SmokeBackground from "./components/SmokeBackground";
-import Particles from "./components/Particles";
-import WolfEyes from "./components/WolfEyes";
+/**
+ * Falcon MAG — Root Router
+ * Routes to v1 (Cinematic) or v2 (Tactical).
+ *
+ *   /v1/*  → Cinematic Edition
+ *   /v2/*  → Tactical Edition
+ *   /*     → redirect to /v2
+ */
+import { BrowserRouter, Routes, Route, Navigate } from "react-router-dom"
 
-function ProtectedRoute({ children }) {
-  const { user, loading } = useAuth();
-  if (loading) return <div className="min-h-screen flex items-center justify-center text-[#FFD700]">Loading...</div>;
-  return user ? children : <Navigate to="/login" />;
-}
-
-function PublicRoute({ children }) {
-  const { user, loading } = useAuth();
-  if (loading) return <div className="min-h-screen flex items-center justify-center text-[#FFD700]">Loading...</div>;
-  return user ? <Navigate to="/dashboard" /> : children;
-}
+import AppV1 from "./v1/App"
+import AppV2 from "./v2/App"
 
 export default function App() {
   return (
-    <AuthProvider>
-      <SmokeBackground />
-      <Particles />
-      <WolfEyes />
-      <BrowserRouter>
-        <Routes>
-          <Route path="/login" element={<PublicRoute><Login /></PublicRoute>} />
-          <Route path="/register" element={<PublicRoute><Register /></PublicRoute>} />
-          <Route path="/dashboard" element={<ProtectedRoute><Dashboard /></ProtectedRoute>} />
-          <Route path="/new-scan" element={<ProtectedRoute><NewScan /></ProtectedRoute>} />
-          <Route path="/monitor" element={<ProtectedRoute><LiveMonitor /></ProtectedRoute>} />
-          <Route path="/findings" element={<ProtectedRoute><Findings /></ProtectedRoute>} />
-          <Route path="/reports" element={<ProtectedRoute><Reports /></ProtectedRoute>} />
-          <Route path="/scans/:id" element={<ProtectedRoute><ScanDetails /></ProtectedRoute>} />
-          <Route path="/" element={<Navigate to="/dashboard" />} />
-          <Route path="*" element={<Navigate to="/dashboard" />} />
-        </Routes>
-      </BrowserRouter>
-    </AuthProvider>
-  );
+    <BrowserRouter>
+      <Routes>
+        {/* v1 — Cinematic Edition */}
+        <Route path="/v1/*" element={<AppV1 />} />
+
+        {/* v2 — Tactical Edition */}
+        <Route path="/v2/*" element={<AppV2 />} />
+
+        {/* Default: redirect to v2 */}
+        <Route path="/" element={<Navigate to="/v2/dashboard" replace />} />
+        <Route path="*" element={<Navigate to="/v2/dashboard" replace />} />
+      </Routes>
+    </BrowserRouter>
+  )
 }

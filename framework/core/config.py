@@ -26,9 +26,12 @@ def apply_target(config: dict, target: str) -> dict:
     return config
 
 
-def apply_modules(config: dict, modules_str: str) -> dict:
-    """Enable only the given modules (comma-separated)."""
-    enabled = {m.strip() for m in modules_str.split(",") if m.strip()}
+def apply_modules(config: dict, modules_str) -> dict:
+    """Enable only the given modules (accepts list or comma-separated string)."""
+    if isinstance(modules_str, (list, tuple)):
+        enabled = {str(m).strip() for m in modules_str if str(m).strip()}
+    else:
+        enabled = {m.strip() for m in str(modules_str).split(",") if m.strip()}
     for k in config.get("modules", {}):
         config["modules"][k] = k in enabled
     return config

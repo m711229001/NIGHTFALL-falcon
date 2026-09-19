@@ -1,16 +1,23 @@
-import i18n from "i18next";
-import { initReactI18next } from "react-i18next";
-import ar from "./locales/ar.json";
-import en from "./locales/en.json";
+import i18n from "i18next"
+import { initReactI18next } from "react-i18next"
+import ar from "./locales/ar.json"
+import en from "./locales/en.json"
 
-i18n.use(initReactI18next).init({
-  resources: {
-    ar: { translation: ar },
-    en: { translation: en },
-  },
-  lng: localStorage.getItem("lang") || "ar",
-  fallbackLng: "en",
-  interpolation: { escapeValue: false },
-});
+if (!i18n.isInitialized) {
+  const savedLang = localStorage.getItem("lang") || "ar"
+  i18n
+    .use(initReactI18next)
+    .init({
+      resources: {
+        ar: { translation: ar },
+        en: { translation: en },
+      },
+      lng: savedLang,
+      fallbackLng: "en",
+      interpolation: { escapeValue: false },
+    })
+  document.documentElement.dir = savedLang === "ar" ? "rtl" : "ltr"
+  document.documentElement.lang = savedLang
+}
 
-export default i18n;
+export default i18n

@@ -433,11 +433,261 @@ async def crawl(pool, seed_url, max_pages=30, max_depth=2):
 
 
 def render_report(findings, summary, output_dir="reports"):
-    os.makedirs(output_dir, exist_ok=True)
-    path = os.path.join(output_dir, "falcon_report.md")
-    lines = ["# Falcon MAG - Scan Report", "", f"**Target:** {summary.get('target', 'N/A')}", f"**Duration:** {summary.get('elapsed_seconds', 0)}s", f"**Requests Used:** {summary.get('budget_used', 0)}", f"**Findings:** {len(findings)}", "", "## Findings", ""]
+    """Generate a comprehensive Markdown report including AI plan, hidden paths, findings."""
+    import os as _os
+    from datetime import datetime as _dt
+
+    _os.makedirs(output_dir, exist_ok=True)
+    path = _os.path.join(output_dir, "falcon_report.md")
+
+    target = summary.get("target", "N/A")
+    scan_id = summary.get("scan_id", "N/A")
+    elapsed = summary.get("elapsed_seconds", 0)
+    requests_used = summary.get("budget_used", 0)
+    ai_calls = summary.get("ai_calls", 0)
+    ai_tokens = summary.get("ai_tokens", 0)
+    waf = summary.get("waf")
+    waf_info = summary.get("waf_info") or {}
+    ai_plan = summary.get("ai_plan") or {}
+    hidden_paths = summary.get("hidden_paths") or []
+    fingerprint = summary.get("fingerprint") or {}
+    crawl = summary.get("crawl") or {}
+
+    lines = []
+
+    # ============================================================
+    # HEADER
+    # ============================================================
+    lines.append("# 🦅 Falcon MAG — Full Scan Report")
+    lines.append("")
+    lines.append(f"**Scan ID:** #{scan_id}")
+    lines.append(f"**Target:** `{target}`")
+    lines.append(f"**Generated:** {_dt.now().isoformat()}")
+    lines.append(f"**Duration:** {elapsed}s")
+    lines.append(f"**Requests Used:** {requests_used}")
+    lines.append(f"**AI Calls:** {ai_calls} ({ai_tokens} tokens)")
+    lines.append("")
+    lines.append("---")
+    lines.append("")
+
+    # ============================================================
+    # EXECUTIVE SUMMARY
+    # ============================================================
+    lines.append("## 📋 Executive Summary")
+    lines.append("")
+
+    sev_counts = {"critical": 0, "high": 0, "medium": 0, "low": 0, "info": 0}
+    for f in findings:
+        sev = (f.get("severity") or "info").lower()
+        if sev in sev_counts:
+            sev_counts[sev] += 1
+
+    lines.append(f"| Metric | Value |")
+    lines.append(f"|--------|-------|")
+    lines.append(f"| Total Findings | **{len(findings)}** |")
+    lines.append(f"| Critical | 🔴 {sev_counts['critical']} |")
+    lines.append(f"| High | 🟠 {sev_counts['high']} |")
+    lines.append(f"| Medium | 🟡 {sev_counts['medium']} |")
+    lines.append(f"| Low | 🟢 {sev_counts['low']} |")
+    lines.append(f"| Info | 🔵 {sev_counts['info']} |")
+    lines.append(f"| Hidden Paths Found | {len(hidden_paths)} |")
+    lines.append(f"| WAF Detected | {'Yes — ' + waf if waf else 'No'} |")
+    lines.append("")
+
+    # ============================================================
+    # AI ANALYSIS
+    # ============================================================
+    if ai_plan:
+        lines.append("---")
+        lines.append("")
+        lines.append("## 🧠 AI Analysis (DeepSeek)")
+        lines.append("")
+
+        risk_level = ai_plan.get("risk_level")
+        if risk_level:
+            lines.append(f"**Risk Level:** `{risk_level}`")
+            lines.append("")
+
+        top_vectors = ai_plan.get("top_attack_vectors") or []
+        if top_vectors:
+            lines.append("### Top Attack Vectors")
+            lines.append("")
+            if isinstance(top_vectors, list):
+                for v in top_vectors[:10]:
+                    lines.append(f"- {v}")
+            else:
+                lines.append(str(top_vectors))
+            lines.append("")
+
+        initial_plan = ai_plan.get("initial_plan")
+        if initial_plan:
+            lines.append("### Initial Plan")
+            lines.append("")
+            lines.append(str(initial_plan)[:3000])
+            lines.append("")
+
+        test_priorities = ai_plan.get("test_priorities") or []
+        if test_priorities:
+            lines.append("### Test Priorities")
+            lines.append("")
+            if isinstance(test_priorities, list):
+                for p in test_priorities[:15]:
+                    lines.append(f"- {p}")
+            else:
+                lines.append(str(test_priorities))
+            lines.append("")
+
+        exploitation_chain = ai_plan.get("exploitation_chain") or []
+        if exploitation_chain:
+            lines.append("### Exploitation Chain")
+            lines.append("")
+            if isinstance(exploitation_chain, list):
+                for step in exploitation_chain[:20]:
+                    lines.append(f"- {step}")
+            else:
+                lines.append(str(exploitation_chain))
+            lines.append("")
+
+        execution_steps = ai_plan.get("execution_steps") or []
+        if execution_steps:
+            lines.append("### Execution Steps")
+            lines.append("")
+            if isinstance(execution_steps, list):
+                for i, s in enumerate(execution_steps[:30], 1):
+                    lines.append(f"{i}. {s}")
+            else:
+                lines.append(str(execution_steps))
+            lines.append("")
+
+        success_criteria = ai_plan.get("success_criteria") or []
+        if success_criteria:
+            lines.append("### Success Criteria")
+            lines.append("")
+            if isinstance(success_criteria, list):
+                for s in success_criteria[:15]:
+                    lines.append(f"- {s}")
+            lines.append("")
+
+        estimated_time = ai_plan.get("estimated_time")
+        if estimated_time:
+            lines.append(f"**Estimated Time:** {estimated_time}")
+            lines.append("")
+
+    # ============================================================
+    # HIDDEN PATHS
+    # ============================================================
+    if hidden_paths:
+        lines.append("---")
+        lines.append("")
+        lines.append(f"## 🗺️ Hidden Paths Discovered ({len(hidden_paths)})")
+        lines.append("")
+        lines.append("| Path | Status | Size | Type |")
+        lines.append("|------|--------|------|------|")
+        for p in hidden_paths[:60]:
+            path_str = p.get("path", "")
+            status = p.get("status", "")
+            size = p.get("size", 0)
+            ptype = p.get("type", "")
+            lines.append(f"| `{path_str}` | {status} | {size}b | {ptype} |")
+        if len(hidden_paths) > 60:
+            lines.append(f"| ... | ... | ... | *{len(hidden_paths) - 60} more* |")
+        lines.append("")
+
+    # ============================================================
+    # FINGERPRINT
+    # ============================================================
+    if fingerprint:
+        lines.append("---")
+        lines.append("")
+        lines.append("## 🔍 Fingerprint")
+        lines.append("")
+        lines.append(f"- **Server:** `{fingerprint.get('server', 'N/A')}`")
+        lines.append(f"- **Powered By:** `{fingerprint.get('powered_by', 'N/A')}`")
+        cms = fingerprint.get("cms", [])
+        if cms:
+            lines.append(f"- **CMS:** {', '.join(cms)}")
+        lines.append("")
+
+    # ============================================================
+    # WAF INFO
+    # ============================================================
+    if waf:
+        lines.append("---")
+        lines.append("")
+        lines.append(f"## 🛡️ WAF Detected: {waf}")
+        lines.append("")
+        if waf_info.get("triggered_probes") is not None:
+            lines.append(f"- **Probes Triggered:** {waf_info.get('triggered_probes')}/{waf_info.get('probes_sent', '?')}")
+        signals = waf_info.get("signals") or []
+        if signals:
+            lines.append(f"- **Signals Detected:** {len(signals)}")
+        lines.append("")
+
+    # ============================================================
+    # FINDINGS (DETAILED)
+    # ============================================================
+    lines.append("---")
+    lines.append("")
+    lines.append(f"## 🔴 Findings ({len(findings)})")
+    lines.append("")
+
     if not findings:
         lines.append("_No vulnerabilities detected._")
+        lines.append("")
+    else:
+        for i, f in enumerate(findings, 1):
+            sev = (f.get("severity") or "info").upper()
+            vc = f.get("vuln_class") or "unknown"
+            subtype = f.get("subtype") or ""
+            title = f"{vc}" + (f" ({subtype})" if subtype else "")
+
+            lines.append(f"### {i}. [{sev}] {title}")
+            lines.append("")
+            lines.append(f"- **URL:** `{f.get('url', '')}`")
+            lines.append(f"- **Parameter:** `{f.get('param', '')}`")
+            payload = f.get("payload", "")
+            if payload:
+                lines.append(f"- **Payload:** `{payload}`")
+            conf = f.get("confidence")
+            if conf is not None:
+                lines.append(f"- **Confidence:** {conf}")
+            lines.append("")
+
+            evidence = f.get("evidence", "")
+            if evidence:
+                lines.append("**Evidence:**")
+                lines.append("```")
+                lines.append(str(evidence)[:1500])
+                lines.append("```")
+                lines.append("")
+
+            if f.get("description"):
+                lines.append(f"**Description:** {f.get('description')}")
+                lines.append("")
+
+            lines.append("")
+
+    # ============================================================
+    # CRAWL SUMMARY
+    # ============================================================
+    if crawl:
+        lines.append("---")
+        lines.append("")
+        lines.append("## 🕷️ Crawl Summary")
+        lines.append("")
+        lines.append(f"- **Pages Visited:** {crawl.get('pages_visited', 0)}")
+        lines.append(f"- **Endpoints Found:** {len(crawl.get('endpoints', []))}")
+        lines.append(f"- **Forms Found:** {len(crawl.get('forms', []))}")
+        lines.append(f"- **JS Files:** {len(crawl.get('js_files', []))}")
+        lines.append("")
+
+    # ============================================================
+    # FOOTER
+    # ============================================================
+    lines.append("---")
+    lines.append("")
+    lines.append(f"*Generated by Falcon MAG v2 — {_dt.now().strftime('%Y-%m-%d %H:%M:%S')}*")
+
     content = "\n".join(lines)
     with open(path, "w", encoding="utf-8") as fh:
         fh.write(content)
@@ -2108,7 +2358,10 @@ Provide final JSON with specific actions:
         return current_plan
 
 
-async def run_scan_v5(target, budget=100, exploit="off", model=None, enable_thinking=False, multi_turn=False):
+async def run_scan_v5(target, budget=100, exploit="off", model=None, enable_thinking=False, multi_turn=False,
+                      cookies="", bearer_token="", headers=None, method="GET",
+                      post_data="", post_json="", login_url="", username="",
+                      password="", sms_code="", user_agent="", proxy=""):
     """Full scan with enhanced AI planning."""
     start = time.monotonic()
     cfg = ScanConfig(target=target, budget=budget, exploit_mode=exploit)
@@ -2133,6 +2386,113 @@ async def run_scan_v5(target, budget=100, exploit="off", model=None, enable_thin
 
     try:
         async with HttpPool(scope, rate, cfg) as pool:
+
+            # ============================================================
+            # Apply advanced auth (cookies, tokens, headers, login)
+            # ============================================================
+            if user_agent:
+                pool.client.headers['User-Agent'] = user_agent
+            if cookies:
+                pool.client.headers['Cookie'] = cookies
+            if bearer_token:
+                pool.client.headers['Authorization'] = 'Bearer ' + bearer_token
+            if headers:
+                for _k, _v in (headers or {}).items():
+                    pool.client.headers[str(_k)] = str(_v)
+            if proxy:
+                try:
+                    pool.client.proxies = {'http': proxy, 'https': proxy}
+                except Exception as _pe:
+                    log.warning('proxy_set_failed', error=str(_pe))
+            cfg.http_method = (method or 'GET').upper()
+            cfg.post_data = post_data or ''
+            cfg.post_json = post_json or ''
+            # ============================================================
+            # Two-Step Login (username/password → optional OTP)
+            # ============================================================
+            if login_url and username and password:
+                try:
+                    # --- Step 1: Send username + password ---
+                    _login_data = {'username': username, 'password': password}
+                    _login = await pool.send('POST', login_url, data=_login_data)
+                    log.info('login_step1_sent', status=_login.status, url=login_url)
+
+                    # --- Step 2: Detect OTP page in response ---
+                    needs_otp = False
+                    otp_url = login_url
+
+                    if sms_code:
+                        body_lower = (_login.text or '').lower()
+
+                        # OTP indicators in body
+                        otp_indicators = [
+                            'sms', 'otp', 'verification code', 'verification_code',
+                            'enter the code', '2fa', 'two-factor', 'two_factor',
+                            'one-time', 'one_time', 'authentication code',
+                            'رمز التحقق', 'التحقق', 'كود التحقق', 'الرسالة النصية',
+                        ]
+
+                        if any(ind in body_lower for ind in otp_indicators):
+                            needs_otp = True
+                            log.info('otp_page_detected', url=otp_url, source='body')
+
+                        # OTP indicators in redirect Location
+                        if not needs_otp:
+                            _loc = ''
+                            for _h in ('Location', 'location'):
+                                if _h in _login.headers:
+                                    _loc = _login.headers[_h]
+                                    break
+                            if _loc and any(ind in _loc.lower() for ind in otp_indicators):
+                                needs_otp = True
+                                if _loc.startswith('http'):
+                                    otp_url = _loc
+                                else:
+                                    from urllib.parse import urljoin as _urljoin
+                                    otp_url = _urljoin(login_url, _loc)
+                                log.info('otp_page_detected', url=otp_url, source='redirect')
+
+                        # Heuristic: short response with form + no dashboard keywords
+                        if not needs_otp:
+                            if '<form' in body_lower and len(body_lower) < 20000:
+                                has_dashboard = any(k in body_lower for k in
+                                    ['dashboard', 'logout', 'signout', 'profile', 'my account'])
+                                if not has_dashboard:
+                                    # Likely still on login or OTP page
+                                    needs_otp = True
+                                    log.info('otp_page_heuristic', url=otp_url)
+
+                    # --- Step 3: Send sms_code in separate request ---
+                    if needs_otp and sms_code:
+                        otp_payload = {
+                            'sms_code': sms_code,
+                            'otp': sms_code,
+                            'code': sms_code,
+                            'verification_code': sms_code,
+                            'two_factor_code': sms_code,
+                            'two_factor_authentication_code': sms_code,
+                            'token': sms_code,
+                            'auth_code': sms_code,
+                        }
+                        _otp_resp = await pool.send('POST', otp_url, data=otp_payload)
+                        log.info('login_step2_otp_sent', status=_otp_resp.status, url=otp_url)
+
+                        # Check OTP success
+                        _otp_body = (_otp_resp.text or '').lower()
+                        if 'invalid' in _otp_body or 'incorrect' in _otp_body or 'wrong' in _otp_body:
+                            log.warning('otp_maybe_rejected', url=otp_url)
+                        else:
+                            log.info('otp_step_completed', url=otp_url)
+
+                    elif sms_code and not needs_otp:
+                        # No OTP page detected — still send sms_code as fallback (single-page OTP)
+                        fallback_data = {'username': username, 'password': password, 'sms_code': sms_code, 'otp': sms_code}
+                        _fb = await pool.send('POST', login_url, data=fallback_data)
+                        log.info('login_single_page_otp_sent', status=_fb.status, url=login_url)
+
+                except Exception as _le:
+                    log.warning('login_failed', error=str(_le))
+
             # WAF Detection (enhanced)
             try:
                 waf_detector = WAFDetector(pool)
@@ -2871,28 +3231,118 @@ class LocalReportOrganizer:
         return path
 
     def _render_markdown(self, report: FindingReport) -> str:
-        lines = [
-            f"# {report.title}", "",
-            f"**Vulnerability:** {report.vuln_class} ({report.subtype})",
-            f"**Severity:** {report.severity.upper()}",
-            f"**CVSS:** {report.cvss}",
-            f"**CWE:** {report.cwe}",
-            f"**URL:** {report.url}",
-            f"**Parameter:** {report.param}",
-            "", "## Description", report.description,
-            "", "## Impact", report.impact,
-            "", "## Steps to Reproduce",
-        ]
-        for i, s in enumerate(report.steps_to_reproduce, 1):
-            lines.append(f"{i}. {s}")
-        lines.extend([
-            "", "## Evidence", "```", report.evidence[:2000], "```",
-            "", "## Remediation", report.remediation,
-            "", "## References",
-        ])
-        for r in report.references:
+        """Render comprehensive finding report with PoC + remediation."""
+        try:
+            from core.nightfall.exploit_templates import get_template
+        except ImportError:
+            get_template = lambda vc: {}
+
+        template = get_template(report.vuln_class)
+        url = report.url
+        param = report.param
+
+        lines = []
+
+        lines.append(f"# SSTI - {report.vuln_class.upper()} - {report.severity.upper()}")
+        lines.append("")
+        lines.append("## Summary")
+        lines.append("")
+        lines.append(f"| Metric | Value |")
+        lines.append(f"|--------|-------|")
+        lines.append(f"| Severity | {report.severity.upper()} |")
+        lines.append(f"| CVSS | {report.cvss} |")
+        lines.append(f"| CWE | {report.cwe} |")
+        lines.append(f"| Vuln Class | {report.vuln_class} |")
+        lines.append(f"| Subtype | {report.subtype or 'N/A'} |")
+        lines.append("")
+
+        lines.append("## Target")
+        lines.append("")
+        lines.append(f"**URL:** `{url}`")
+        lines.append(f"**Parameter:** `{param}`")
+        lines.append(f"**Payload:** `{report.payload}`")
+        lines.append("")
+
+        lines.append("## Explanation")
+        lines.append("")
+        lines.append(template.get("explanation", report.description))
+        lines.append("")
+
+        lines.append("## Impact")
+        lines.append("")
+        lines.append(template.get("impact", report.impact))
+        lines.append("")
+
+        lines.append("## Evidence")
+        lines.append("")
+        lines.append("```")
+        lines.append(str(report.evidence)[:2000])
+        lines.append("```")
+        lines.append("")
+
+        lines.append("## Exploitation Steps")
+        lines.append("")
+        steps = template.get("steps") or report.steps_to_reproduce
+        for i, step in enumerate(steps, 1):
+            lines.append(f"{i}. {step}")
+        lines.append("")
+
+        poc_py = template.get("poc_python")
+        if poc_py:
+            poc_py = poc_py.replace("{url}", url).replace("{param}", param)
+            lines.append("## PoC Python")
+            lines.append("")
+            lines.append("```python")
+            lines.append(poc_py)
+            lines.append("```")
+            lines.append("")
+
+        poc_bash = template.get("poc_bash")
+        if poc_bash:
+            poc_bash = poc_bash.replace("{url}", url).replace("{param}", param)
+            lines.append("## PoC Bash")
+            lines.append("")
+            lines.append("```bash")
+            lines.append(poc_bash)
+            lines.append("```")
+            lines.append("")
+
+        lines.append("## Remediation")
+        lines.append("")
+        lines.append(f"**Description:** {report.remediation}")
+        lines.append("")
+
+        rem_code = template.get("remediation_code")
+        if rem_code:
+            lines.append("### Fix Code")
+            lines.append("")
+            lines.append("```python")
+            lines.append(rem_code)
+            lines.append("```")
+            lines.append("")
+
+        waf = template.get("waf_rules")
+        if waf:
+            lines.append("### WAF Rules")
+            lines.append("")
+            lines.append("```")
+            lines.append(waf)
+            lines.append("```")
+            lines.append("")
+
+        lines.append("## References")
+        lines.append("")
+        refs = template.get("references") or report.references
+        for r in refs:
             lines.append(f"- {r}")
+        lines.append("")
+
+        lines.append("---")
+        lines.append("")
+        lines.append("*Generated by Falcon MAG v2*")
+
         return "\n".join(lines)
+
 
 
 async def generate_bug_bounty_reports(scan_id: int, findings: list, output_dir="bug_bounty_reports"):

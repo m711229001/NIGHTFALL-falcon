@@ -10,7 +10,13 @@
   "dashboard": "لوحة التحكم",
   "new_scan": "فحص جديد",
   "findings": "الثغرات",
-  "reports": "التقارير",
+  "reports": {
+    "print": "طباعة",
+    "download": "تحميل",
+    "copy": "نسخ",
+    "copied": "تم النسخ!",
+    "preview": "معاينة"
+  },
   "objectives": "الأهداف",
   "callbacks": "الاتصالات الراجعة",
   "evidence": "الأدلة",
@@ -77,7 +83,7 @@
   "probes_triggered": "الفحوصات المُفعَّلة",
   "signals_detected": "الإشارات المكتشفة",
   "signals": "الإشارات",
-  "waf_protection_msg": "الهدف محمي بواسطة {waf}. الحمولات القياسية قد تُحظر. تقنيات تجاوز WAF تم تطبيقها.",
+  "waf_protection_msg": "الهدف محمي بواسطة {waf}. الحمولات القياسية قد تُحظر.",
   "hidden_paths": "المسارات المخفية",
   "path_col": "المسار",
   "type_col": "النوع",
@@ -91,5 +97,120 @@
   "proxy_disable": "إيقاف البروكسي",
   "proxy_enabled": "البروكسي مُفعَّل",
   "proxy_disabled": "البروكسي معطَّل",
-  "proxy_burp_url": "عنوان Burp"
+  "proxy_burp_url": "عنوان Burp",
+  "actions": "إجراءات",
+  "sidebar": {
+    "systemSecure": "النظام آمن"
+  },
+  "header": {
+    "searchPlaceholder": "ابحث بـ IP، CVE، نطاق...",
+    "notifications": "الإشعارات",
+    "newScan": "فحص جديد",
+    "theme": "المظهر"
+  },
+  "dashboardV2": {
+    "title": "لوحة التحكم v2"
+  },
+  "kpi": {
+    "totalScans": "إجمالي الفحوصات",
+    "scanUnits": "فحص",
+    "critical": "ثغرات حرجة",
+    "needsAction": "تتطلب معالجة",
+    "medium": "ثغرات متوسطة",
+    "monitor": "للمراقبة",
+    "resolved": "ثغرات معالجة",
+    "allClear": "كل شيء نظيف"
+  },
+  "charts": {
+    "threatFrequency": "معدل التهديدات عبر الزمن",
+    "vulnDistribution": "توزيع الثغرات",
+    "noData": "لا توجد بيانات"
+  },
+  "table": {
+    "recentFindings": "أحدث الثغرات",
+    "severity": "الخطورة",
+    "name": "الاسم",
+    "target": "الهدف",
+    "date": "التاريخ",
+    "actions": "إجراءات",
+    "viewDetails": "عرض",
+    "noFindings": "لا توجد ثغرات",
+    "category": "التصنيف",
+    "parameter": "المعامل"
+  },
+  "drawer": {
+    "title": "تفاصيل الثغرة",
+    "url": "الرابط",
+    "payload": "الحمولة",
+    "evidence": "الدليل",
+    "description": "الوصف",
+    "copyUrl": "نسخ الرابط",
+    "close": "إغلاق",
+    "copied": "تم النسخ!"
+  },
+  "common": {
+    "loading": "جاري التحميل...",
+    "comingSoon": "قريباً"
+  },
+  "theme": {
+    "switch": "المظهر",
+    "dark": "داكن",
+    "mid": "متوسط",
+    "light": "فاتح"
+  },
+  "nav": {
+    "dashboard": "لوحة التحكم",
+    "newScan": "فحص جديد",
+    "frameworkScan": "فحص Framework",
+    "profiles": "Profiles",
+    "login": "تسجيل دخول",
+    "findings": "الثغرات",
+    "reports": "التقارير",
+    "liveMonitor": "المراقبة",
+    "liveSession": "المتصفح المباشر",
+    "logout": "تسجيل خروج"
+  },
+  "frameworkScan": {
+    "title": "فحص Framework",
+    "subtitle": "تشغيل framework/cli.py — 40+ وحدة",
+    "target": "رابط الهدف",
+    "modules": "الوحدات",
+    "auth": "المصادقة",
+    "advanced": "متقدم",
+    "selectProfile": "اختر profile",
+    "startButton": "بدء الفحص",
+    "cancelButton": "إلغاء",
+    "newScanButton": "فحص جديد",
+    "status": "الحالة",
+    "liveLog": "السجل المباشر",
+    "results": "النتائج",
+    "error": "خطأ",
+    "parallel": "العمال المتوازيون",
+    "timeout": "المهلة (ث)",
+    "insecure": "تجاهل SSL"
+  },
+  "profiles": {
+    "title": "Profiles تسجيل الدخول",
+    "subtitle": "جلسات Playwright المحفوظة",
+    "noProfiles": "لا توجد profiles بعد",
+    "createProfile": "إنشاء profile",
+    "useButton": "استخدام",
+    "newLogin": "تسجيل دخول جديد"
+  },
+  "playwrightLogin": {
+    "title": "تسجيل دخول Playwright",
+    "subtitle": "تسجيل دخول تلقائي عبر المتصفح",
+    "loginUrl": "رابط تسجيل الدخول",
+    "authType": "نوع المصادقة",
+    "profileName": "اسم profile",
+    "wait": "الانتظار (ث)",
+    "username": "اسم المستخدم",
+    "password": "كلمة المرور",
+    "totpSecret": "سر TOTP",
+    "buttonSelector": "selector الزر",
+    "headless": "وضع Headless",
+    "loginButton": "تسجيل الدخول",
+    "viewProfiles": "عرض Profiles",
+    "retry": "إعادة"
+  }
 }

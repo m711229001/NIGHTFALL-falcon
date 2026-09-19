@@ -1,7 +1,7 @@
 import { useEffect, useState, useRef } from "react";
 import { useTranslation } from "react-i18next";
 import Layout from "../components/Layout";
-import { scanApi } from "../api/client";
+import { scanApi } from "../../api/client";
 
 export default function LiveMonitor() {
   const { t } = useTranslation();

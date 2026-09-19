@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
 import Layout from "../components/Layout";
-import { findingsApi } from "../api/client";
+import { findingsApi } from "../../api/client";
 
 export default function Findings() {
   const { t } = useTranslation();

@@ -199,7 +199,11 @@ def _count_findings(data: dict) -> int:
     for key in ("vulnerable", "real_paths", "open_ports", "secrets",
                 "vulnerable_forms", "weak_protocols",
                 "found", "cves", "dangerous", "insecure",
-                "endpoints", "js_files"):
+                "endpoints", "js_files",
+                # ADDED 2026-09-20: more finding keys
+                "findings", "issues", "alerts", "leaks", "hits",
+                "suspicious", "exposed", "misconfigurations",
+                "vulnerabilities", "warnings"):
         val = data.get(key)
         if isinstance(val, list):
             count += len(val)

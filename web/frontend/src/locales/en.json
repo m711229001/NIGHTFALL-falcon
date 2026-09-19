@@ -164,6 +164,7 @@
     "frameworkScan": "Framework Scan",
     "profiles": "Profiles",
     "login": "Login",
+    "aiSettings": "AI Settings",
     "findings": "Findings",
     "reports": "Reports",
     "liveMonitor": "Live Monitor",
@@ -212,5 +213,29 @@
     "loginButton": "LOGIN",
     "viewProfiles": "View Profiles",
     "retry": "Retry"
-  }
+  },"aiSettings": {
+  "title": "AI Settings",
+  "subtitle": "Choose an AI provider, enter API key, and activate — encryption automatic",
+  "currentStatus": "Current Status",
+  "noActive": "No active provider — choose one below",
+  "active": "Active",
+  "chooseProvider": "Choose Provider",
+  "configured": "Configured",
+  "apiKey": "API Key",
+  "noKeyNeeded": "not required for this provider",
+  "keepExisting": "Leave empty to keep existing key",
+  "getApiKey": "Get API Key ↗",
+  "model": "Model",
+  "customModel": "Or type a custom model",
+  "baseUrl": "Base URL",
+  "testConnection": "Test Connection",
+  "save": "Save",
+  "savedOk": "Saved successfully ✓",
+  "activatedOk": "Activated ✓",
+  "confirmDelete": "Delete this provider?",
+  "configuredProviders": "Configured Providers",
+  "activate": "Activate",
+  "delete": "Delete",
+  "securityNote": "Keys are Fernet-encrypted in framework/config/ai_config.json"
+}
 }

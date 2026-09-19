@@ -16,6 +16,7 @@ import LiveSessionV2 from "./pages/LiveSessionV2"
 import FrameworkScanV2 from "./pages/FrameworkScanV2"
 import ProfilesV2 from "./pages/ProfilesV2"
 import LoginV2 from "./pages/LoginV2"
+import AISettingsV2 from "./pages/AISettingsV2"
 
 export default function AppV2() {
   return (
@@ -24,6 +25,7 @@ export default function AppV2() {
         <Route path="framework-scan" element={<FrameworkScanV2 />} />
         <Route path="profiles" element={<ProfilesV2 />} />
         <Route path="login" element={<LoginV2 />} />
+              <Route path="ai-settings" element={<AISettingsV2 />} />
         <Route path="dashboard" element={<DashboardV2 />} />
         <Route path="new-scan" element={<NewScanV2 />} />
         <Route path="findings" element={<FindingsV2 />} />

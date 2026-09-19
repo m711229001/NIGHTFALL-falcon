@@ -164,6 +164,7 @@
     "frameworkScan": "فحص Framework",
     "profiles": "Profiles",
     "login": "تسجيل دخول",
+    "aiSettings": "إعدادات AI",
     "findings": "الثغرات",
     "reports": "التقارير",
     "liveMonitor": "المراقبة",
@@ -212,5 +213,29 @@
     "loginButton": "تسجيل الدخول",
     "viewProfiles": "عرض Profiles",
     "retry": "إعادة"
-  }
+  },"aiSettings": {
+  "title": "إعدادات الذكاء الاصطناعي",
+  "subtitle": "اختر مزوّد AI، أدخل المفتاح، وفعّله — التشفير تلقائي",
+  "currentStatus": "الحالة الحالية",
+  "noActive": "لا يوجد مزود مفعّل — اختر مزوداً من الأسفل",
+  "active": "نشط",
+  "chooseProvider": "اختر المزوّد",
+  "configured": "مُعدّ",
+  "apiKey": "API Key",
+  "noKeyNeeded": "غير مطلوب لهذا المزود",
+  "keepExisting": "اتركه فارغاً للاحتفاظ بالمفتاح الحالي",
+  "getApiKey": "احصل على API Key ↗",
+  "model": "الموديل",
+  "customModel": "أو اكتب موديلاً مخصصاً",
+  "baseUrl": "Base URL",
+  "testConnection": "اختبار الاتصال",
+  "save": "حفظ",
+  "savedOk": "تم الحفظ بنجاح ✓",
+  "activatedOk": "تم التفعيل ✓",
+  "confirmDelete": "حذف هذا المزود؟",
+  "configuredProviders": "المزودون المُعدّون",
+  "activate": "تفعيل",
+  "delete": "حذف",
+  "securityNote": "المفاتيح تُشفَّر بـ Fernet وتُخزَّن في framework/config/ai_config.json"
+}
 }

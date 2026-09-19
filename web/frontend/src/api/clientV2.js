@@ -1,8 +1,9 @@
 /**
  * Falcon MAG v2 — Framework CLI API client
- * Wraps /api/v2/* endpoints (scans, profiles, auth).
+ * Wraps /api/v2/* and /api/ai/* endpoints.
  *
  * FIXED 2026-09-18: Use relative paths (nginx proxies /api/v2/*).
+ * ADDED 2026-09-19: aiConfigApi for AI provider settings.
  */
 import axios from "axios";
 
@@ -59,6 +60,29 @@ export const authV2Api = {
   login:       (data)                 => clientV2.post("/api/v2/auth/login", data),
   loginStatus: (loginId)              => clientV2.get(`/api/v2/auth/login/${loginId}`),
   loginLog:    (loginId, tail = 200)  => clientV2.get(`/api/v2/auth/login/${loginId}/log?tail=${tail}`),
+};
+
+// ============================================================
+// AI Config API (/api/ai/*)
+// ADDED 2026-09-19: AI provider configuration
+// ============================================================
+export const aiConfigApi = {
+  /** قائمة المزودين المعروفين + المُعدّين */
+  providers:    ()                => clientV2.get("/api/ai/providers"),
+  /** الإعدادات الحالية (بدون مفاتيح) */
+  config:       ()                => clientV2.get("/api/ai/config"),
+  /** الموديلات المعروفة لمزود */
+  models:       (provider)        => clientV2.get(`/api/ai/models/${provider}`),
+  /** حفظ مزود (يُشفّر المفتاح) */
+  save:         (data)            => clientV2.post("/api/ai/config", data),
+  /** تفعيل مزود */
+  activate:     (provider)        => clientV2.post("/api/ai/activate", { provider }),
+  /** حذف مزود */
+  remove:       (provider)        => clientV2.delete(`/api/ai/config/${provider}`),
+  /** اختبار الاتصال */
+  test:         (data)            => clientV2.post("/api/ai/test", data || {}),
+  /** مسح كل الإعدادات */
+  clear:        ()                => clientV2.post("/api/ai/clear"),
 };
 
 export default clientV2;

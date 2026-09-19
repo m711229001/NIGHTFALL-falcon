@@ -13,6 +13,7 @@ const NAV_ITEMS = [
   { to: "/v2/framework-scan", icon: "🦅", key: "nav.frameworkScan" },
   { to: "/v2/profiles",       icon: "👤", key: "nav.profiles" },
   { to: "/v2/login",          icon: "🔐", key: "nav.login" },
+  { to: "/v2/ai-settings",    icon: "🤖", key: "nav.aiSettings" },
   { to: "/v2/findings",  icon: "🎯", key: "nav.findings" },
   { to: "/v2/reports",   icon: "📄", key: "nav.reports" },
    { to: "/v2/live-session", icon: "👁️", key: "nav.liveSession" },

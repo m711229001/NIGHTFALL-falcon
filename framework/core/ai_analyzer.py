@@ -430,12 +430,68 @@ def generate_executive_summary(results: dict, findings: List[dict]) -> str:
         "4. تقييم عام (خطير/متوسط/منخفض)"
     )
 
-    return _call_deepseek(
+    # 1. First attempt
+    summary = _call_deepseek(
         "أنت خبير أمن سيبراني. اكتب بالعربية الفصحى المهنية. أسلوب تقارير احترافية.",
         prompt,
         timeout=120,
-        max_tokens=1500,
-    ) or ""
+        max_tokens=2000,
+    )
+
+    # 2. Retry if empty
+    if not summary or not summary.strip():
+        log.info("[AI] Executive summary empty, retrying...")
+        summary = _call_deepseek(
+            "أنت خبير أمن سيبراني. اكتب بالعربية.",
+            prompt,
+            timeout=120,
+            max_tokens=2500,
+        )
+
+    # 3. Local fallback (guaranteed)
+    if not summary or not summary.strip():
+        log.warning("[AI] Executive summary failed, using local fallback")
+        summary = _build_local_summary(target, findings)
+
+    return summary
+
+
+def _build_local_summary(target: str, findings: List[dict]) -> str:
+    """Fallback executive summary built locally (no AI)."""
+    total = len(findings)
+    by_sev = {}
+    for f in findings:
+        sev = f.get("severity", "info")
+        by_sev[sev] = by_sev.get(sev, 0) + 1
+
+    top_titles = []
+    for f in findings:
+        if f.get("severity") in ("critical", "high"):
+            top_titles.append("- " + f.get("title", "")[:80])
+        if len(top_titles) >= 5:
+            break
+
+    lines = [
+        f"تم فحص الهدف: {target}",
+        f"إجمالي الثغرات المكتشفة: {total}",
+        "",
+        "التوزيع حسب الخطورة:",
+        f"- حرجة: {by_sev.get('critical', 0)}",
+        f"- عالية: {by_sev.get('high', 0)}",
+        f"- متوسطة: {by_sev.get('medium', 0)}",
+        f"- منخفضة: {by_sev.get('low', 0)}",
+        f"- معلوماتية: {by_sev.get('info', 0)}",
+    ]
+
+    if top_titles:
+        lines.append("")
+        lines.append("أهم الثغرات:")
+        lines.extend(top_titles)
+
+    lines.append("")
+    lines.append("(تم توليد هذا الملخص محلياً - AI غير متاح حالياً)")
+
+    return "\n".join(lines)
 
 
 # ============================================================

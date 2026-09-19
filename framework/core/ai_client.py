@@ -4,17 +4,16 @@ from abc import ABC, abstractmethod
 from typing import Any, AsyncGenerator, Dict, Optional
 import httpx
 
-# استيراد متجر الإعدادات الخاص بالمشروع
 try:
     from core.ai_config_store import get_ai_config
 except ImportError:
-    get_ai_config = None  # للتعامل مع التشغيل المستقل إن لزم الأمر
+    get_ai_config = None
 
 logger = logging.getLogger("AIClient")
 
 
 # =====================================================================
-# 1. الواجهة الأساسية (مع جعل build_request غير متزامن async)
+# 1. Base Interface
 # =====================================================================
 class BaseAIProvider(ABC):
     @abstractmethod
@@ -28,25 +27,24 @@ class BaseAIProvider(ABC):
         max_tokens: int = 4000,
         base_url: Optional[str] = None,
     ) -> tuple[str, Dict[str, str], Dict[str, Any]]:
-        """تجهيز الـ URL والـ Headers والـ Payload للطلب (دعم Async للـ Tokens أو Signatures)"""
         pass
 
     @abstractmethod
     def parse_response(self, data: Dict[str, Any]) -> str:
-        """استخراج النص الكامل من الاستجابة المتزامنة"""
         pass
 
     @abstractmethod
     def parse_stream_chunk(self, line: str) -> Optional[str]:
-        """استخراج النص الجزئي من أسطر الـ SSE Streaming"""
         pass
 
 
 # =====================================================================
-# 2. تطبيق المزودين (Adapters)
+# 2. Providers
 # =====================================================================
 
 class OpenAIProvider(BaseAIProvider):
+    """OpenAI-compatible: OpenAI, DeepSeek, Groq, Together, OpenRouter, Ollama, Mistral."""
+
     async def build_request(
         self,
         api_key: str,
@@ -57,7 +55,18 @@ class OpenAIProvider(BaseAIProvider):
         max_tokens: int = 4000,
         base_url: Optional[str] = None,
     ) -> tuple[str, Dict[str, str], Dict[str, Any]]:
-        url = base_url or "https://api.openai.com/v1/chat/completions"
+        # Build chat completions URL
+        if base_url:
+            base = base_url.rstrip("/")
+            if base.endswith("/chat/completions"):
+                url = base
+            elif base.endswith("/v1"):
+                url = base + "/chat/completions"
+            else:
+                url = base + "/v1/chat/completions"
+        else:
+            url = "https://api.openai.com/v1/chat/completions"
+
         headers = {
             "Authorization": f"Bearer {api_key}",
             "Content-Type": "application/json",
@@ -100,7 +109,17 @@ class ClaudeProvider(BaseAIProvider):
         max_tokens: int = 4000,
         base_url: Optional[str] = None,
     ) -> tuple[str, Dict[str, str], Dict[str, Any]]:
-        url = base_url or "https://api.anthropic.com/v1/messages"
+        if base_url:
+            base = base_url.rstrip("/")
+            if base.endswith("/messages"):
+                url = base
+            elif base.endswith("/v1"):
+                url = base + "/messages"
+            else:
+                url = base + "/v1/messages"
+        else:
+            url = "https://api.anthropic.com/v1/messages"
+
         headers = {
             "x-api-key": api_key,
             "anthropic-version": "2023-06-01",
@@ -143,7 +162,15 @@ class GeminiProvider(BaseAIProvider):
         max_tokens: int = 4000,
         base_url: Optional[str] = None,
     ) -> tuple[str, Dict[str, str], Dict[str, Any]]:
-        endpoint = base_url or f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
+        if base_url:
+            base = base_url.rstrip("/")
+            if ":generateContent" in base:
+                endpoint = base
+            else:
+                endpoint = base + f"/models/{model}:generateContent"
+        else:
+            endpoint = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
+
         url = f"{endpoint}?key={api_key}"
         headers = {"Content-Type": "application/json"}
 
@@ -173,7 +200,7 @@ class GeminiProvider(BaseAIProvider):
 
 
 # =====================================================================
-# 3. العميل الموحد (Universal AI Client)
+# 3. Universal Client
 # =====================================================================
 
 class UniversalAIClient:
@@ -182,16 +209,19 @@ class UniversalAIClient:
         self._providers: Dict[str, BaseAIProvider] = {
             "openai": OpenAIProvider(),
             "deepseek": OpenAIProvider(),
+            "groq": OpenAIProvider(),
+            "mistral": OpenAIProvider(),
+            "openrouter": OpenAIProvider(),
+            "together": OpenAIProvider(),
+            "ollama": OpenAIProvider(),
             "claude": ClaudeProvider(),
+            "anthropic": ClaudeProvider(),
             "gemini": GeminiProvider(),
         }
 
     def register_provider(self, name: str, provider: BaseAIProvider):
         self._providers[name.lower()] = provider
 
-    # -----------------------------------------------------------------
-    # طبقة التكامل مع ai_config_store (إصلاح ضعف 5)
-    # -----------------------------------------------------------------
     async def generate_from_active(
         self,
         user_prompt: str,
@@ -202,16 +232,18 @@ class UniversalAIClient:
         stream: bool = False,
     ):
         if not get_ai_config:
-            raise RuntimeError("لم يتم العثور على وحدة ai_config_store في المشروع.")
+            raise RuntimeError("ai_config_store not available.")
 
         active = get_ai_config().get_active_provider()
         if not active or not active.get("api_key"):
-            raise ValueError("لا يوجد مزود نشط مع مِفتاح API معتمد في ai_config_store.")
+            raise ValueError("No active provider with API key in ai_config_store.")
 
-        # تحديد المهلة الزمنية الافتراضية بحسب المزود إن لم تُحدد (إصلاح ضعف 6)
         provider_name = active["name"].lower()
         if timeout is None:
-            timeout_map = {"openai": 90.0, "claude": 90.0, "gemini": 45.0, "ollama": 120.0}
+            timeout_map = {
+                "openai": 90.0, "claude": 90.0, "anthropic": 90.0,
+                "gemini": 45.0, "ollama": 120.0, "deepseek": 90.0,
+            }
             timeout = timeout_map.get(provider_name, 60.0)
 
         if stream:
@@ -239,9 +271,6 @@ class UniversalAIClient:
             timeout=timeout,
         )
 
-    # -----------------------------------------------------------------
-    # دالة الاستجابة الكاملة المتزامنة منطقياً عبر Async
-    # -----------------------------------------------------------------
     async def generate_text(
         self,
         provider: str,
@@ -250,17 +279,16 @@ class UniversalAIClient:
         user_prompt: str,
         system_prompt: Optional[str] = None,
         temperature: float = 0.3,
-        max_tokens: int = 4000,  # رفع القيمة الافتراضية (إصلاح ضعف 3)
+        max_tokens: int = 4000,
         base_url: Optional[str] = None,
-        timeout: float = 60.0,    # مرونة الـ Timeout لكل طلب (إصلاح ضعف 6)
+        timeout: float = 60.0,
     ) -> str:
         provider_key = provider.lower()
         if provider_key not in self._providers:
-            raise ValueError(f"المزود '{provider}' غير مدعوم.")
+            raise ValueError(f"Provider '{provider}' not supported.")
 
         provider_impl = self._providers[provider_key]
 
-        # استدعاء غير متزامن لـ build_request (إصلاح ضعف 1)
         url, headers, payload = await provider_impl.build_request(
             api_key=api_key,
             model=model,
@@ -276,13 +304,13 @@ class UniversalAIClient:
         async with httpx.AsyncClient(timeout=httpx.Timeout(timeout)) as client:
             for attempt in range(1, self.max_retries + 1):
                 try:
-                    logger.info(f"إرسال طلب إلى [{provider}] (المحاولة {attempt}/{self.max_retries})...")
+                    logger.info(f"AI request to [{provider}] (attempt {attempt}/{self.max_retries})...")
                     response = await client.post(url, headers=headers, json=payload)
 
                     if response.status_code in [429, 500, 502, 503, 504]:
                         if attempt < self.max_retries:
                             wait_time = 2 ** attempt
-                            logger.warning(f"استجابة {response.status_code}. إعادة المحاولة بعد {wait_time} ثوانٍ...")
+                            logger.warning(f"Status {response.status_code}. Retry in {wait_time}s...")
                             await asyncio.sleep(wait_time)
                             continue
 
@@ -291,21 +319,20 @@ class UniversalAIClient:
                     return provider_impl.parse_response(data)
 
                 except httpx.HTTPStatusError as e:
-                    logger.error(f"خطأ HTTP من {provider}: {e.response.status_code} - {e.response.text}")
-                    raise RuntimeError(f"خطأ من المزود [{e.response.status_code}]: {e.response.text}")
+                    logger.error(f"HTTP error from {provider}: {e.response.status_code} - {e.response.text[:300]}")
+                    raise RuntimeError(f"Provider error [{e.response.status_code}]: {e.response.text[:300]}")
 
                 except httpx.RequestError as e:
                     last_exception = e
-                    logger.warning(f"فشل الاتصال بالحزمة في المحاولة {attempt}: {str(e)}")
+                    logger.warning(f"Network error attempt {attempt}: {str(e)}")
                     if attempt < self.max_retries:
                         await asyncio.sleep(2 ** attempt)
 
-            # معالجة انتهاء الحلقة بدون إرجاع نتيجة (إصلاح ضعف 4 - Bug Fix)
-            raise RuntimeError(f"تعذر الاتصال بـ [{provider}] بعد {self.max_retries} محاولات. الخطأ: {str(last_exception)}")
+            raise RuntimeError(
+                f"Failed to connect to [{provider}] after {self.max_retries} attempts. "
+                f"Last error: {str(last_exception)}"
+            )
 
-    # -----------------------------------------------------------------
-    # دالة الـ Streaming لدعم الردود الطويلة (إصلاح ضعف 2)
-    # -----------------------------------------------------------------
     async def generate_stream(
         self,
         provider: str,
@@ -320,7 +347,7 @@ class UniversalAIClient:
     ) -> AsyncGenerator[str, None]:
         provider_key = provider.lower()
         if provider_key not in self._providers:
-            raise ValueError(f"المزود '{provider}' غير مدعوم.")
+            raise ValueError(f"Provider '{provider}' not supported.")
 
         provider_impl = self._providers[provider_key]
 
@@ -334,8 +361,7 @@ class UniversalAIClient:
             base_url=base_url,
         )
 
-        # تفعيل الخيار للـ Streaming بناءً على المزود
-        if provider_key in ["openai", "deepseek", "claude"]:
+        if provider_key in ["openai", "deepseek", "groq", "mistral", "openrouter", "together", "ollama"]:
             payload["stream"] = True
 
         async with httpx.AsyncClient(timeout=httpx.Timeout(timeout)) as client:

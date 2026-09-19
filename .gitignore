@@ -245,3 +245,15 @@ cli_content.py
 !.gitkeep
 !.env.example
 !README.md
+# === Secrets tooling ===
+replace-secrets.txt
+
+
+# AI Secrets
+framework/config/.ai_master_key
+framework/config/ai_config.json
+framework/config/*.tmp
+
+# Temp
+_git_ai.py
+_git_*.py

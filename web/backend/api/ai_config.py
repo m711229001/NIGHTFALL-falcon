@@ -20,41 +20,68 @@ Endpoints:
 
 from __future__ import annotations
 
+import importlib.util
 import os
 import sys
+from pathlib import Path
 from typing import Any, Optional
 
 import httpx
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, Field
 
-# ------------------------------------------------------------
+# ============================================================
 # Bridge: framework/ ← backend/
+# ============================================================
+# WHY: 'core' exists in BOTH /app/core (backend) and /app/framework/core.
+# sys.path insertion caused naming collision. We load by absolute path instead.
 # ------------------------------------------------------------
+
 _NIGHTFALL_DIR = os.getenv("NIGHTFALL_DIR", "/app")
-_FRAMEWORK_DIR = os.path.join(_NIGHTFALL_DIR, "framework")
-if _FRAMEWORK_DIR not in sys.path:
-    sys.path.insert(0, _FRAMEWORK_DIR)
+_FRAMEWORK_DIR = Path(_NIGHTFALL_DIR) / "framework"
+_AI_CONFIG_STORE = _FRAMEWORK_DIR / "core" / "ai_config_store.py"
+_LOGGER_PATH = _FRAMEWORK_DIR / "core" / "logger.py"
 
-try:
-    from core.ai_config_store import (  # type: ignore
-        KNOWN_PROVIDERS,
-        get_ai_config,
-    )
-except ImportError as e:
+if not _AI_CONFIG_STORE.exists():
     raise RuntimeError(
-        f"Cannot import core.ai_config_store. "
-        f"Check that {_FRAMEWORK_DIR} exists and contains core/ai_config_store.py. "
-        f"Original error: {e}"
+        f"Cannot find {_AI_CONFIG_STORE}. "
+        f"Check NIGHTFALL_DIR env var and volume mounts."
     )
 
-# ------------------------------------------------------------
-# Auth dependency — من core.security
-# ------------------------------------------------------------
+# --- Load framework/core/logger.py first (as 'falcon_core_logger') ---
+if _LOGGER_PATH.exists():
+    _logger_spec = importlib.util.spec_from_file_location(
+        "falcon_core_logger", str(_LOGGER_PATH)
+    )
+    if _logger_spec and _logger_spec.loader:
+        _logger_module = importlib.util.module_from_spec(_logger_spec)
+        sys.modules["falcon_core_logger"] = _logger_module
+        # Alias so ai_config_store's `from core.logger import get_logger` works
+        sys.modules["core.logger"] = _logger_module
+        _logger_spec.loader.exec_module(_logger_module)
+
+# --- Load framework/core/ai_config_store.py (as 'falcon_ai_config_store') ---
+_spec = importlib.util.spec_from_file_location(
+    "falcon_ai_config_store", str(_AI_CONFIG_STORE)
+)
+if _spec is None or _spec.loader is None:
+    raise RuntimeError(f"Cannot load {_AI_CONFIG_STORE}")
+
+_ai_module = importlib.util.module_from_spec(_spec)
+sys.modules["falcon_ai_config_store"] = _ai_module
+_spec.loader.exec_module(_ai_module)
+
+KNOWN_PROVIDERS = _ai_module.KNOWN_PROVIDERS
+get_ai_config = _ai_module.get_ai_config
+
+
+# ============================================================
+# Auth dependency — من core.security (backend's core)
+# ============================================================
 try:
     from core.security import get_current_user  # type: ignore
 except ImportError:
-    # Fallback مؤقت إذا لم يكن موجوداً — سيُستبدل لاحقاً
+    # Fallback مؤقت — للتطوير فقط
     async def get_current_user():  # type: ignore
         return {"username": "dev"}
 
@@ -97,10 +124,9 @@ class TestIn(BaseModel):
 
 @router.get("/providers")
 async def list_providers(_user=Depends(get_current_user)) -> dict[str, Any]:
-    """يرجع قائمة المزودين المعروفين (templates) + الحالة الحالية للمُعدّين."""
+    """يرجع قائمة المزودين المعروفين + الحالة الحالية."""
     cfg = get_ai_config()
     state = cfg.get_raw()
-
     return {
         "known": KNOWN_PROVIDERS,
         "configured": state.get("providers", {}),
@@ -121,7 +147,7 @@ async def get_models(
     provider: str,
     _user=Depends(get_current_user),
 ) -> dict[str, Any]:
-    """يرجع قائمة الموديلات المعروفة لمزود معين."""
+    """يرجع قائمة الموديلات المعروفة لمزود."""
     provider = provider.strip().lower()
     if provider not in KNOWN_PROVIDERS:
         raise HTTPException(
@@ -155,7 +181,6 @@ async def save_provider(
             detail=f"Unknown provider: {provider}. "
                    f"Known: {', '.join(KNOWN_PROVIDERS.keys())}",
         )
-
     try:
         cfg = get_ai_config()
         result = cfg.set_provider(
@@ -169,7 +194,6 @@ async def save_provider(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=str(e),
         )
-
     return {
         "ok": True,
         "message": f"Provider '{provider}' saved",
@@ -182,7 +206,7 @@ async def activate_provider(
     body: ActivateIn,
     _user=Depends(get_current_user),
 ) -> dict[str, Any]:
-    """يفعّل مزوداً مُعدّاً مسبقاً."""
+    """يفعّل مزوداً مُعدّاً."""
     provider = body.provider.strip().lower()
     try:
         cfg = get_ai_config()
@@ -217,7 +241,7 @@ async def delete_provider(
 
 @router.post("/clear")
 async def clear_all(_user=Depends(get_current_user)) -> dict[str, Any]:
-    """يمسح كل إعدادات AI (بحذر!)."""
+    """يمسح كل إعدادات AI."""
     cfg = get_ai_config()
     result = cfg.clear_all()
     return {
@@ -273,11 +297,11 @@ async def test_connection(
             detail=f"API key required for '{provider_name}'",
         )
 
-    # 3. بناء URL للاختبار
+    # 3. URL للاختبار
     url = base_url.rstrip("/") + "/models"
     headers = _build_headers(template, api_key)
 
-    # 4. إرسال الطلب
+    # 4. إرسال
     try:
         async with httpx.AsyncClient(timeout=15.0) as client:
             resp = await client.get(url, headers=headers)
@@ -300,7 +324,7 @@ async def test_connection(
             "error": f"Unexpected error: {e}",
         }
 
-    # 5. تحليل الاستجابة
+    # 5. تحليل
     if resp.status_code == 200:
         return {
             "ok": True,

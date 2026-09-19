@@ -24,9 +24,13 @@ RUN apt-get update -o Acquire::Retries=5 && \
         xvfb x11vnc fluxbox \
         novnc websockify \
         fonts-dejavu fonts-noto \
-        nmap openssl dnsutils git bash procps unzip \
-        exploitdb \
+                nmap openssl dnsutils git bash procps unzip \
     && rm -rf /var/lib/apt/lists/*
+
+# --- searchsploit (exploitdb) — installed via git (not in Debian Trixie repos) ---
+RUN git clone --depth 1 https://gitlab.com/exploit-database/exploitdb.git /opt/exploitdb \
+    && ln -sf /opt/exploitdb/searchsploit /usr/local/bin/searchsploit \
+    && chmod +x /opt/exploitdb/searchsploit
 
 # --- Python dependencies ---
 COPY requirements.txt .

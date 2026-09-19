@@ -185,18 +185,42 @@ def _call_deepseek(system_prompt: str, user_prompt: str,
     if json_mode:
         payload["response_format"] = {"type": "json_object"}
 
-    try:
-        with httpx.Client(timeout=timeout) as client:
-            resp = client.post(api_url, headers=headers, json=payload)
-            if resp.status_code != 200:
-                log.warning("AI API error: " + str(resp.status_code))
-                log.debug("Response: " + resp.text[:500])
-                return None
-            data = resp.json()
-            return data["choices"][0]["message"]["content"]
-    except Exception as e:
-        log.warning("AI call failed: " + str(e))
-        return None
+    # Retry loop (ADDED 2026-09-20)
+    max_retries = 3
+    for attempt in range(1, max_retries + 1):
+        try:
+            with httpx.Client(timeout=timeout) as client:
+                resp = client.post(api_url, headers=headers, json=payload)
+                if resp.status_code == 429 or resp.status_code >= 500:
+                    if attempt < max_retries:
+                        wait = 2 ** attempt
+                        log.warning(f"AI API {resp.status_code} — retry {attempt}/{max_retries} in {wait}s")
+                        time.sleep(wait)
+                        continue
+                    log.warning(f"AI API error: {resp.status_code} (gave up)")
+                    return None
+                if resp.status_code != 200:
+                    log.warning(f"AI API error: {resp.status_code}")
+                    log.debug("Response: " + resp.text[:500])
+                    return None
+                data = resp.json()
+                return data["choices"][0]["message"]["content"]
+        except Exception as e:
+            err = str(e)
+            is_transient = (
+                "disconnected" in err.lower() or
+                "timeout" in err.lower() or
+                "connection" in err.lower() or
+                "remote" in err.lower()
+            )
+            if is_transient and attempt < max_retries:
+                wait = 2 ** attempt
+                log.warning(f"AI call failed ({err[:60]}) — retry {attempt}/{max_retries} in {wait}s")
+                time.sleep(wait)
+                continue
+            log.warning(f"AI call failed: {err[:120]}")
+            return None
+    return None
 
 
 def _extract_json(text: str) -> Optional[dict]:
@@ -423,7 +447,7 @@ def analyze_all_findings(findings: List[dict],
     to_analyze = to_analyze[:max_findings]
 
     total = len(to_analyze)
-    log.info(f"AI analyzing {total} findings (parallel x3)...")
+    log.info(f"AI analyzing {total} findings (parallel x2)...")
 
     # Parallel analysis (3 workers)
     def _work(item):
@@ -434,8 +458,13 @@ def analyze_all_findings(findings: List[dict],
             return idx, f, e
 
     completed = 0
-    with ThreadPoolExecutor(max_workers=3) as pool:
-        futures = {pool.submit(_work, item): item for item in to_analyze}
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        futures = {}
+        for i, item in enumerate(to_analyze):
+            futures[pool.submit(_work, item)] = item
+            if i < len(to_analyze) - 1:
+                time.sleep(0.5)  # stagger submits to avoid burst rate-limit
+
         for future in as_completed(futures):
             idx, result, err = future.result()
             completed += 1

@@ -51,6 +51,64 @@ USER_AGENTS = [
 ]
 
 
+# ============================================================
+# Static resource detection (ADDED 2026-09-20)
+# ============================================================
+STATIC_EXTENSIONS = {
+    ".css", ".js", ".mjs", ".map", ".ico", ".png", ".jpg", ".jpeg",
+    ".gif", ".svg", ".webp", ".woff", ".woff2", ".ttf", ".eot",
+    ".mp3", ".mp4", ".webm", ".ogg", ".wav",
+    ".pdf", ".zip", ".tar", ".gz", ".rar", ".7z",
+    ".xml", ".txt", ".csv", ".xls", ".xlsx", ".doc", ".docx",
+    ".ppt", ".pptx",
+}
+
+STATIC_PATH_PREFIXES = (
+    "/assets/", "/static/", "/public/", "/dist/", "/build/",
+    "/media/", "/images/", "/img/", "/css/", "/js/", "/fonts/",
+    "/_next/static/", "/_nuxt/", "/_astro/", "/wp-content/uploads/",
+)
+
+STATIC_EXACT_FILES = {
+    "favicon.ico", "robots.txt", "sitemap.xml", "sitemap_index.xml",
+    "manifest.json", "browserconfig.xml", "crossdomain.xml",
+    "clientaccesspolicy.xml", "humans.txt", "security.txt",
+}
+
+
+def is_static_resource(url: str) -> bool:
+    """Check if a URL points to a static resource (should not be fuzzed)."""
+    try:
+        from urllib.parse import urlparse
+        p = urlparse(url)
+        path = (p.path or "/").lower()
+        filename = path.rsplit("/", 1)[-1]
+
+        # Exact known files
+        if filename in STATIC_EXACT_FILES:
+            return True
+
+        # Extension check (last dot)
+        if "." in filename:
+            ext = "." + filename.rsplit(".", 1)[-1]
+            if ext in STATIC_EXTENSIONS:
+                return True
+
+        # Path prefix check
+        for prefix in STATIC_PATH_PREFIXES:
+            if prefix in path:
+                return True
+
+        return False
+    except Exception:
+        return False
+
+
+def is_testable_url(url: str) -> bool:
+    """URL is safe to inject payloads into."""
+    return not is_static_resource(url)
+
+
 class HTTPResponse:
     """Normalized HTTP response."""
     __slots__ = ("url", "status", "headers", "text", "content",

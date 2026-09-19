@@ -532,6 +532,7 @@ export default function VulnDetailDrawer({ finding, onClose }) {
   const isRtl = i18n.language === "ar"
   const [aiAnalysis, setAiAnalysis] = useState(null)
   const [aiLoading, setAiLoading] = useState(false)
+  const [aiTab, setAiTab] = useState("explanation")
 
   useEffect(() => {
     const onKey = (e) => { if (e.key === "Escape") onClose() }
@@ -681,105 +682,174 @@ export default function VulnDetailDrawer({ finding, onClose }) {
             </Section>
           )}
 
-                    {(aiLoading || aiAnalysis) && (
+          {/* ===== AI Analysis Section (tabbed) ===== */}
+          {(aiLoading || aiAnalysis) && (
             <div>
-              <SectionTitle>AI Analysis</SectionTitle>
-              {aiLoading && <div className="mt-2 text-xs" style={{ color: "var(--text-muted)" }}>Loading...</div>}
+              <SectionTitle>🤖 AI Analysis</SectionTitle>
+
+              {aiLoading && (
+                <div className="mt-2 text-xs flex items-center gap-2" style={{ color: "var(--text-muted)" }}>
+                  <span className="anim-spin inline-block w-3 h-3 border-2 border-t-transparent rounded-full" style={{ borderColor: "var(--accent-purple)", borderTopColor: "transparent" }} />
+                  Analyzing with AI...
+                </div>
+              )}
+
               {aiAnalysis && (
-                <div className="mt-2 space-y-4 text-sm p-3 rounded"
+                <div className="mt-2 rounded-lg overflow-hidden"
                   style={{ background: "rgba(139,92,246,0.05)", border: "1px solid rgba(139,92,246,0.3)" }}>
 
-                  <div className="flex items-center gap-4 flex-wrap">
+                  {/* --- Banner: CVSS + Severity + Priority --- */}
+                  <div className="p-3 flex items-center gap-4 flex-wrap"
+                    style={{ borderBottom: "1px solid rgba(139,92,246,0.2)", background: "rgba(139,92,246,0.08)" }}>
                     {aiAnalysis.cvss_score > 0 && (
                       <div className="flex items-baseline gap-2">
                         <div className="text-3xl font-bold font-mono"
                           style={{ color: aiAnalysis.cvss_score >= 7 ? "#dc2626" : aiAnalysis.cvss_score >= 4 ? "#ca8a04" : "#16a34a" }}>
-                          {aiAnalysis.cvss_score.toFixed(1)}
+                          {Number(aiAnalysis.cvss_score).toFixed(1)}
                         </div>
                         <div className="text-xs" style={{ color: "var(--text-muted)" }}>CVSS</div>
                       </div>
                     )}
-                    {aiAnalysis.priority !== undefined && aiAnalysis.priority !== 99 && (
-                      <div className="text-xs px-2 py-1 rounded"
-                        style={{ background: "rgba(220,38,38,0.15)", color: "#fca5a5" }}>
-                        Priority: {aiAnalysis.priority}
+                    {aiAnalysis.severity && (
+                      <div className="text-xs px-2 py-1 rounded font-bold"
+                        style={{
+                          background: aiAnalysis.severity === "critical" ? "rgba(220,38,38,0.2)" :
+                                     aiAnalysis.severity === "high" ? "rgba(234,88,12,0.2)" :
+                                     aiAnalysis.severity === "medium" ? "rgba(202,138,4,0.2)" :
+                                     "rgba(22,163,74,0.2)",
+                          color: aiAnalysis.severity === "critical" ? "#fca5a5" :
+                                 aiAnalysis.severity === "high" ? "#fb923c" :
+                                 aiAnalysis.severity === "medium" ? "#facc15" :
+                                 "#4ade80",
+                          border: "1px solid currentColor",
+                        }}>
+                        {aiAnalysis.severity.toUpperCase()}
                       </div>
                     )}
-                    {aiAnalysis.severity && (
+                    {aiAnalysis.priority !== undefined && aiAnalysis.priority !== 99 && (
                       <div className="text-xs px-2 py-1 rounded"
-                        style={{ background: "rgba(0,0,0,0.3)", color: "var(--text-primary)" }}>
-                        {aiAnalysis.severity.toUpperCase()}
+                        style={{ background: "rgba(220,38,38,0.15)", color: "#fca5a5", border: "1px solid rgba(220,38,38,0.3)" }}>
+                        ⚠ Priority {aiAnalysis.priority}
                       </div>
                     )}
                   </div>
 
+                  {/* --- CVSS Vector --- */}
                   {aiAnalysis.cvss_vector && (
-                    <div className="text-[10px] font-mono break-all" style={{ color: "var(--text-muted)" }}>
+                    <div className="px-3 py-2 text-[10px] font-mono break-all"
+                      style={{ borderBottom: "1px solid rgba(139,92,246,0.2)", color: "var(--text-muted)" }}>
                       {aiAnalysis.cvss_vector}
                     </div>
                   )}
 
-                  {(aiAnalysis.explanation_ar || aiAnalysis.summary) && (
-                    <div>
-                      <div className="text-xs font-bold mb-1" style={{ color: "var(--accent-cyan)" }}>Explanation</div>
-                      <p style={{ whiteSpace: "pre-wrap", lineHeight: 1.7 }}>{aiAnalysis.explanation_ar || aiAnalysis.summary}</p>
-                    </div>
-                  )}
+                  {/* --- Tabs Navigation --- */}
+                  <div className="flex overflow-x-auto" style={{ borderBottom: "1px solid rgba(139,92,246,0.2)" }}>
+                    {[
+                      { id: "explanation", label: "📖 الشرح", show: !!(aiAnalysis.explanation_ar || aiAnalysis.summary) },
+                      { id: "exploitation", label: "🎯 الاستغلال", show: !!aiAnalysis.attack_walkthrough_ar },
+                      { id: "poc", label: "💻 PoC", show: !!(aiAnalysis.poc_code || aiAnalysis.poc_url) },
+                      { id: "remediation", label: "🛠️ الإصلاح", show: !!(aiAnalysis.remediation_ar || aiAnalysis.remediation_code) },
+                      { id: "references", label: "📚 المراجع", show: aiAnalysis.references && aiAnalysis.references.length > 0 },
+                    ].filter(t => t.show).map(tab => (
+                      <button
+                        key={tab.id}
+                        onClick={() => setAiTab(tab.id)}
+                        className="px-3 py-2 text-xs font-bold whitespace-nowrap transition-colors"
+                        style={{
+                          background: aiTab === tab.id ? "rgba(139,92,246,0.15)" : "transparent",
+                          color: aiTab === tab.id ? "var(--accent-purple)" : "var(--text-secondary)",
+                          borderBottom: aiTab === tab.id ? "2px solid var(--accent-purple)" : "2px solid transparent",
+                          cursor: "pointer",
+                        }}>
+                        {tab.label}
+                      </button>
+                    ))}
+                  </div>
 
-                  {aiAnalysis.attack_walkthrough_ar && (
-                    <div>
-                      <div className="text-xs font-bold mb-1" style={{ color: "#fbbf24" }}>Attack Walkthrough</div>
-                      <p style={{ whiteSpace: "pre-wrap", lineHeight: 1.7 }}>{aiAnalysis.attack_walkthrough_ar}</p>
-                    </div>
-                  )}
+                  {/* --- Tab Content --- */}
+                  <div className="p-3 text-sm" style={{ minHeight: "100px" }}>
 
-                  {aiAnalysis.poc_url && (
-                    <div>
-                      <div className="text-xs font-bold mb-1" style={{ color: "var(--accent-cyan)" }}>PoC URL</div>
-                      <code className="text-xs break-all block p-2 rounded"
-                        style={{ background: "rgba(0,0,0,0.3)", color: "#93c5fd" }}>
-                        {aiAnalysis.poc_url}
-                      </code>
-                    </div>
-                  )}
+                    {/* Explanation Tab */}
+                    {aiTab === "explanation" && (
+                      <div style={{ whiteSpace: "pre-wrap", lineHeight: 1.8 }}>
+                        {aiAnalysis.explanation_ar || aiAnalysis.summary}
+                      </div>
+                    )}
 
-                  {aiAnalysis.poc_code && (
-                    <div>
-                      <div className="text-xs font-bold mb-1" style={{ color: "#10b981" }}>PoC Code</div>
-                      <CodeBlock title="PoC" code={aiAnalysis.poc_code} lang={aiAnalysis.poc_language || "python"} />
-                    </div>
-                  )}
+                    {/* Exploitation Tab */}
+                    {aiTab === "exploitation" && aiAnalysis.attack_walkthrough_ar && (
+                      <div style={{ whiteSpace: "pre-wrap", lineHeight: 1.8 }}>
+                        {aiAnalysis.attack_walkthrough_ar}
+                      </div>
+                    )}
 
-                  {aiAnalysis.remediation_ar && (
-                    <div>
-                      <div className="text-xs font-bold mb-1" style={{ color: "#22d3ee" }}>Remediation</div>
-                      <p style={{ whiteSpace: "pre-wrap", lineHeight: 1.7 }}>{aiAnalysis.remediation_ar}</p>
-                    </div>
-                  )}
+                    {/* PoC Tab */}
+                    {aiTab === "poc" && (
+                      <div className="space-y-3">
+                        {aiAnalysis.poc_url && (
+                          <div>
+                            <div className="text-xs font-bold mb-1" style={{ color: "var(--accent-cyan)" }}>
+                              🔗 PoC URL
+                            </div>
+                            <div className="rounded p-2 font-mono text-xs break-all flex items-start gap-2"
+                              style={{ background: "rgba(0,0,0,0.3)", color: "#93c5fd" }}>
+                              <span className="flex-1">{aiAnalysis.poc_url}</span>
+                              <button
+                                onClick={() => {
+                                  try { navigator.clipboard.writeText(aiAnalysis.poc_url) } catch (_) {}
+                                }}
+                                className="text-[10px] px-2 py-0.5 rounded shrink-0"
+                                style={{ background: "var(--accent-cyan)", color: "white", border: "none", cursor: "pointer" }}>
+                                Copy
+                              </button>
+                            </div>
+                          </div>
+                        )}
+                        {aiAnalysis.poc_code && (
+                          <CodeBlock
+                            title={"PoC Code (" + (aiAnalysis.poc_language || "python") + ")"}
+                            code={aiAnalysis.poc_code}
+                            lang={aiAnalysis.poc_language || "python"}
+                          />
+                        )}
+                      </div>
+                    )}
 
-                  {aiAnalysis.remediation_code && (
-                    <div>
-                      <div className="text-xs font-bold mb-1" style={{ color: "#22d3ee" }}>Remediation Code</div>
-                      <CodeBlock title="Remediation" code={aiAnalysis.remediation_code} lang="text" />
-                    </div>
-                  )}
+                    {/* Remediation Tab */}
+                    {aiTab === "remediation" && (
+                      <div className="space-y-3">
+                        {aiAnalysis.remediation_ar && (
+                          <div style={{ whiteSpace: "pre-wrap", lineHeight: 1.8 }}>
+                            {aiAnalysis.remediation_ar}
+                          </div>
+                        )}
+                        {aiAnalysis.remediation_code && (
+                          <CodeBlock
+                            title="Remediation Code"
+                            code={aiAnalysis.remediation_code}
+                            lang="text"
+                          />
+                        )}
+                      </div>
+                    )}
 
-                  {aiAnalysis.references && aiAnalysis.references.length > 0 && (
-                    <div>
-                      <div className="text-xs font-bold mb-1" style={{ color: "var(--text-muted)" }}>References</div>
-                      <ul className="text-xs space-y-1 list-disc list-inside">
+                    {/* References Tab */}
+                    {aiTab === "references" && aiAnalysis.references && (
+                      <ul className="space-y-2">
                         {aiAnalysis.references.map((ref, i) => (
-                          <li key={i}>
+                          <li key={i} className="flex items-start gap-2 text-xs">
+                            <span style={{ color: "var(--accent-purple)" }}>▸</span>
                             <a href={ref} target="_blank" rel="noopener noreferrer"
-                              style={{ color: "#60a5fa", textDecoration: "underline" }}>
+                              className="flex-1 break-all hover:underline"
+                              style={{ color: "#60a5fa" }}>
                               {ref}
                             </a>
                           </li>
                         ))}
                       </ul>
-                    </div>
-                  )}
+                    )}
 
+                  </div>
                 </div>
               )}
             </div>

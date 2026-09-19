@@ -248,6 +248,49 @@ def extract_findings(results: dict) -> List[dict]:
         })
 
     # ==========================================================
+    # Headers Check (generic findings list) — ADDED 2026-09-20
+    # ==========================================================
+    hc = _get_module_result(results, "headers_check")
+    for hf in hc.get("findings", []):
+        url = hf.get("url", results.get("target", ""))
+        findings.append({
+            "severity": hf.get("severity", "low"),
+            "title": hf.get("title", "Missing security header"),
+            "description": hf.get("description", ""),
+            "evidence": hf.get("evidence", ""),
+            "url": url,
+            "original_url": url,
+            "injected_url": url,
+            "param": "",
+            "payload": "",
+            "category": hf.get("category", "Headers"),
+        })
+
+    # ==========================================================
+    # Generic `findings` from any module — ADDED 2026-09-20
+    # ==========================================================
+    _GENERIC_MODULES = ("cookies_checker", "http_methods", "tls_checker",
+                        "rate_limit_test", "subdomain_enum", "cve_lookup")
+    for mod_name in _GENERIC_MODULES:
+        mod_data = _get_module_result(results, mod_name)
+        for gf in mod_data.get("findings", []) or []:
+            if not isinstance(gf, dict):
+                continue
+            url = gf.get("url", results.get("target", ""))
+            findings.append({
+                "severity": gf.get("severity", "info"),
+                "title": gf.get("title", mod_name),
+                "description": gf.get("description", ""),
+                "evidence": gf.get("evidence", ""),
+                "url": url,
+                "original_url": gf.get("original_url", url),
+                "injected_url": gf.get("injected_url", url),
+                "param": gf.get("param", ""),
+                "payload": gf.get("payload", ""),
+                "category": gf.get("category", mod_name),
+            })
+
+    # ==========================================================
     # Missing Security Headers (Info)
     # ==========================================================
     fp = _get_module_result(results, "fingerprint")

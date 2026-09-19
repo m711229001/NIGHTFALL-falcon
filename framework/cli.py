@@ -40,12 +40,18 @@ console = Console()
 # Auth extensions (Playwright + TOTP) — optional
 # ============================================================
 try:
-    from core.auth_playwright import load_profile, list_profiles  # login_with_playwright removed
-    from core.auth_totp import generate_totp, verify_secret
+    from core.auth.profiles import load_profile, list_profiles
     HAS_AUTH_EXTENSIONS = True
 except ImportError as e:
-    log.warning(f"Auth extensions not available: {e}")
+    log.warning(f"Profile extensions not available: {e}")
     HAS_AUTH_EXTENSIONS = False
+
+# TOTP support
+try:
+    import pyotp
+    HAS_TOTP = True
+except ImportError:
+    HAS_TOTP = False
 
 
 # Generic auth (basic/oauth/saml/nafath)
@@ -59,6 +65,32 @@ except ImportError as e:
 # ============================================================
 # Typer App
 # ============================================================
+# ============================================================
+# TOTP helpers
+# ============================================================
+def generate_totp(secret: str) -> str:
+    """Generate a TOTP code from a base32 secret."""
+    if not HAS_TOTP:
+        return ""
+    try:
+        return pyotp.TOTP(secret).now()
+    except Exception:
+        return ""
+
+
+def verify_secret(secret: str) -> bool:
+    """Verify a TOTP secret is valid base32."""
+    if not secret:
+        return False
+    try:
+        import base64
+        base64.b32decode(secret.upper(), casefold=True)
+        return True
+    except Exception:
+        return False
+
+
+
 app = typer.Typer(
     name="falcon",
     help="🦅 Falcon MAG Framework — Security Assessment CLI",

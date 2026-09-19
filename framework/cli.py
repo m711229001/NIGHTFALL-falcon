@@ -460,6 +460,17 @@ def _run_scan(target: str, module_names: list, config_path: str = None,
     # ==========================================================
     total_elapsed = time.time() - start_time
 
+    # ==========================================================
+    # Fill report metadata (ADDED 2026-09-19)
+    # ==========================================================
+    results["timestamp"] = results.get("scan_date", datetime.now(timezone.utc).isoformat())
+    results["duration"] = round(total_elapsed, 2)
+    results["modules_run"] = list(results.get("module_results", {}).keys())
+    try:
+        results["http_requests_count"] = len(client.history)
+    except Exception:
+        results["http_requests_count"] = 0
+
     report_config = config
     if output_override:
         if not isinstance(report_config, dict):

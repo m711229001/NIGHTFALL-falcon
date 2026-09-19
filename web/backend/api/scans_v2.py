@@ -52,6 +52,10 @@ class StartScanV2Request(BaseModel):
     output: Optional[str] = None
     config: Optional[str] = None
 
+    # AI
+    no_ai: bool = False
+    ai_max: int = 20
+
 
 # ============================================================
 # Endpoints
@@ -85,6 +89,8 @@ async def start_scan_v2(
             output=req.output,
             config=req.config,
             timeout=req.timeout,
+            no_ai=req.no_ai,
+            ai_max=req.ai_max,
         )
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to start scan: {e}")
@@ -124,6 +130,22 @@ async def cancel_v2(scan_id: str, user: dict = Depends(get_current_user)):
 @router.get("/list")
 async def list_v2(user: dict = Depends(get_current_user)):
     return {"scans": cli_runner.list_scans()}
+
+
+@router.get("/ai/{scan_id}")
+async def get_ai_analyses_v2(
+    scan_id: str,
+    user: dict = Depends(get_current_user),
+):
+    """Return AI analyses for a scan (from output JSON)."""
+    analyses = cli_runner.get_ai_analyses(scan_id)
+    if analyses is None:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Scan not found or no AI data: {scan_id}",
+        )
+    return {"scan_id": scan_id, "analyses": analyses}
+
 
 
 @router.get("/diagnose")

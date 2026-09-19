@@ -681,33 +681,111 @@ export default function VulnDetailDrawer({ finding, onClose }) {
             </Section>
           )}
 
-          {(aiLoading || aiAnalysis) && (
+                    {(aiLoading || aiAnalysis) && (
             <div>
-              <SectionTitle>🤖 تحليل DeepSeek AI</SectionTitle>
-              {aiLoading && <div className="mt-2 text-xs" style={{ color: "var(--text-muted)" }}>جارٍ التحميل...</div>}
+              <SectionTitle>AI Analysis</SectionTitle>
+              {aiLoading && <div className="mt-2 text-xs" style={{ color: "var(--text-muted)" }}>Loading...</div>}
               {aiAnalysis && (
-                <div className="mt-2 space-y-3 text-sm p-3 rounded"
+                <div className="mt-2 space-y-4 text-sm p-3 rounded"
                   style={{ background: "rgba(139,92,246,0.05)", border: "1px solid rgba(139,92,246,0.3)" }}>
-                  {aiAnalysis.cvss_score > 0 && (
-                    <div className="flex items-center gap-3">
-                      <div className="text-2xl font-bold font-mono"
-                        style={{ color: aiAnalysis.cvss_score >= 7 ? "#dc2626" : aiAnalysis.cvss_score >= 4 ? "#ca8a04" : "#16a34a" }}>
-                        {aiAnalysis.cvss_score.toFixed(1)}
+
+                  <div className="flex items-center gap-4 flex-wrap">
+                    {aiAnalysis.cvss_score > 0 && (
+                      <div className="flex items-baseline gap-2">
+                        <div className="text-3xl font-bold font-mono"
+                          style={{ color: aiAnalysis.cvss_score >= 7 ? "#dc2626" : aiAnalysis.cvss_score >= 4 ? "#ca8a04" : "#16a34a" }}>
+                          {aiAnalysis.cvss_score.toFixed(1)}
+                        </div>
+                        <div className="text-xs" style={{ color: "var(--text-muted)" }}>CVSS</div>
                       </div>
+                    )}
+                    {aiAnalysis.priority !== undefined && aiAnalysis.priority !== 99 && (
+                      <div className="text-xs px-2 py-1 rounded"
+                        style={{ background: "rgba(220,38,38,0.15)", color: "#fca5a5" }}>
+                        Priority: {aiAnalysis.priority}
+                      </div>
+                    )}
+                    {aiAnalysis.severity && (
+                      <div className="text-xs px-2 py-1 rounded"
+                        style={{ background: "rgba(0,0,0,0.3)", color: "var(--text-primary)" }}>
+                        {aiAnalysis.severity.toUpperCase()}
+                      </div>
+                    )}
+                  </div>
+
+                  {aiAnalysis.cvss_vector && (
+                    <div className="text-[10px] font-mono break-all" style={{ color: "var(--text-muted)" }}>
+                      {aiAnalysis.cvss_vector}
                     </div>
                   )}
-                  {aiAnalysis.summary && (
+
+                  {(aiAnalysis.explanation_ar || aiAnalysis.summary) && (
                     <div>
-                      <div className="text-xs font-bold mb-1" style={{ color: "var(--accent-cyan)" }}>📝 الملخص</div>
-                      <p style={{ whiteSpace: "pre-wrap" }}>{aiAnalysis.summary}</p>
+                      <div className="text-xs font-bold mb-1" style={{ color: "var(--accent-cyan)" }}>Explanation</div>
+                      <p style={{ whiteSpace: "pre-wrap", lineHeight: 1.7 }}>{aiAnalysis.explanation_ar || aiAnalysis.summary}</p>
                     </div>
                   )}
+
+                  {aiAnalysis.attack_walkthrough_ar && (
+                    <div>
+                      <div className="text-xs font-bold mb-1" style={{ color: "#fbbf24" }}>Attack Walkthrough</div>
+                      <p style={{ whiteSpace: "pre-wrap", lineHeight: 1.7 }}>{aiAnalysis.attack_walkthrough_ar}</p>
+                    </div>
+                  )}
+
+                  {aiAnalysis.poc_url && (
+                    <div>
+                      <div className="text-xs font-bold mb-1" style={{ color: "var(--accent-cyan)" }}>PoC URL</div>
+                      <code className="text-xs break-all block p-2 rounded"
+                        style={{ background: "rgba(0,0,0,0.3)", color: "#93c5fd" }}>
+                        {aiAnalysis.poc_url}
+                      </code>
+                    </div>
+                  )}
+
+                  {aiAnalysis.poc_code && (
+                    <div>
+                      <div className="text-xs font-bold mb-1" style={{ color: "#10b981" }}>PoC Code</div>
+                      <CodeBlock title="PoC" code={aiAnalysis.poc_code} lang={aiAnalysis.poc_language || "python"} />
+                    </div>
+                  )}
+
+                  {aiAnalysis.remediation_ar && (
+                    <div>
+                      <div className="text-xs font-bold mb-1" style={{ color: "#22d3ee" }}>Remediation</div>
+                      <p style={{ whiteSpace: "pre-wrap", lineHeight: 1.7 }}>{aiAnalysis.remediation_ar}</p>
+                    </div>
+                  )}
+
+                  {aiAnalysis.remediation_code && (
+                    <div>
+                      <div className="text-xs font-bold mb-1" style={{ color: "#22d3ee" }}>Remediation Code</div>
+                      <CodeBlock title="Remediation" code={aiAnalysis.remediation_code} lang="text" />
+                    </div>
+                  )}
+
+                  {aiAnalysis.references && aiAnalysis.references.length > 0 && (
+                    <div>
+                      <div className="text-xs font-bold mb-1" style={{ color: "var(--text-muted)" }}>References</div>
+                      <ul className="text-xs space-y-1 list-disc list-inside">
+                        {aiAnalysis.references.map((ref, i) => (
+                          <li key={i}>
+                            <a href={ref} target="_blank" rel="noopener noreferrer"
+                              style={{ color: "#60a5fa", textDecoration: "underline" }}>
+                              {ref}
+                            </a>
+                          </li>
+                        ))}
+                      </ul>
+                    </div>
+                  )}
+
                 </div>
               )}
             </div>
           )}
 
-          <div className="pt-3 mt-3 text-xs"
+<div className="pt-3 mt-3 text-xs"
             style={{ borderTop: "1px solid var(--border-color)", color: "var(--text-muted)", fontFamily: "monospace" }}>
             {finding.vuln_class && <span>vuln_class: {finding.vuln_class}</span>}
             {finding.subtype && <span className="ms-3">subtype: {finding.subtype}</span>}

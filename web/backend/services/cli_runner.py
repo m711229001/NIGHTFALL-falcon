@@ -608,6 +608,8 @@ def build_scan_args(
     config: Optional[str] = None,
     json_out: bool = True,
     quiet: bool = True,
+    no_ai: bool = False,
+    ai_max: int = 20,
 ) -> List[str]:
     """Build the argv list for `python framework/cli.py scan ...`."""
     args = [
@@ -655,6 +657,10 @@ def build_scan_args(
         args += ["--profile", profile]
     if totp_secret:
         args += ["--totp-secret", totp_secret]
+    if no_ai:
+        args.append("--no-ai")
+    if ai_max and ai_max != 20:
+        args += ["--ai-max", str(ai_max)]
     return args
 
 
@@ -857,6 +863,95 @@ def cancel_scan(scan_id: str) -> dict:
         return {"status": "cancelled", "scan_id": scan_id}
     except Exception as e:
         return {"status": "error", "scan_id": scan_id, "error": str(e)}
+
+
+def get_ai_analyses(scan_id: str) -> Optional[List[dict]]:
+    """Return AI analyses for a scan by reading the latest output JSON.
+
+    Strategy: find the most recent scan_*.json whose scan_date is close
+    to state.started_at (within ±60 seconds).
+    """
+    state = _get(scan_id)
+    if not state:
+        return None
+
+    # Parse started_at
+    try:
+        from datetime import datetime
+        if state.started_at:
+            # Accept both formats
+            ts_str = state.started_at.replace("Z", "+00:00")
+            scan_start = datetime.fromisoformat(ts_str)
+        else:
+            scan_start = None
+    except Exception:
+        scan_start = None
+
+    # Find matching JSON file
+    import glob
+    import os
+    from datetime import datetime, timezone
+
+    json_files = sorted(
+        glob.glob(str(OUTPUT_DIR / "scan_*.json")),
+        key=os.path.getmtime,
+        reverse=True,
+    )
+
+    data = None
+    for jf in json_files:
+        try:
+            with open(jf, encoding="utf-8") as fh:
+                candidate = json.load(fh)
+        except Exception:
+            continue
+
+        # Match by scan_date if available
+        if scan_start and candidate.get("scan_date"):
+            try:
+                cand_date = candidate["scan_date"].replace("Z", "+00:00")
+                cand_dt = datetime.fromisoformat(cand_date)
+                delta = abs((cand_dt - scan_start).total_seconds())
+                if delta <= 120:
+                    data = candidate
+                    break
+            except Exception:
+                pass
+        else:
+            # No date to compare; take the most recent
+            data = candidate
+            break
+
+    if data is None:
+        return None
+
+    # Read AI fields
+    ai_enriched = data.get("_ai_enriched") or data.get("ai_enriched") or []
+    if not ai_enriched:
+        return None
+
+    analyses = []
+    for i, f in enumerate(ai_enriched):
+        analyses.append({
+            "finding_id": f.get("id", i),
+            "cvss_score": f.get("ai_cvss_score", 0),
+            "cvss_vector": f.get("ai_cvss_vector", ""),
+            "severity": f.get("ai_severity", f.get("severity", "info")),
+            "explanation_ar": f.get("ai_explanation_ar", ""),
+            "attack_walkthrough_ar": f.get("ai_attack_walkthrough_ar", ""),
+            "poc_code": f.get("ai_poc_code", ""),
+            "poc_language": f.get("ai_poc_language", "python"),
+            "poc_url": f.get("ai_poc_url", ""),
+            "remediation_ar": f.get("ai_remediation_ar", ""),
+            "remediation_code": f.get("ai_remediation_code", ""),
+            "references": f.get("ai_references", []) or [],
+            "priority": f.get("ai_priority", 99),
+            # alias for current frontend
+            "summary": f.get("ai_explanation_ar", ""),
+        })
+
+    return analyses
+
 
 
 def get_status(scan_id: str, tail: int = 200) -> Optional[dict]:

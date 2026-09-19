@@ -1,4 +1,8 @@
 # ================================================================
+!framework/tests/**
+
+
+# ================================================================
 # Falcon MAG v2 — .gitignore
 # ================================================================
 # Last updated: 2026-09-19
@@ -261,3 +265,6 @@ _git_*.py
 !framework/tests/
 !framework/tests/**
 
+# Allow framework tests
+!framework/tests/
+!framework/tests/**

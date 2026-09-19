@@ -128,6 +128,10 @@ export default function FrameworkScanV2() {
   const [timeout, setTimeout] = useState(1800)
   const [insecure, setInsecure] = useState(false)
 
+  // ---- AI ----
+  const [aiEnabled, setAiEnabled] = useState(true)
+  const [aiMax, setAiMax] = useState(20)
+
   // ---- Data ----
   const [profiles, setProfiles] = useState([])
   const [profilesError, setProfilesError] = useState("")
@@ -219,6 +223,8 @@ export default function FrameworkScanV2() {
       parallel,
       timeout,
       insecure,
+      no_ai: !aiEnabled,
+      ai_max: aiMax,
     }
     if (authMode === "profile" && profile) {
       payload.profile = profile
@@ -411,6 +417,33 @@ export default function FrameworkScanV2() {
                         className="w-full px-4 py-2 rounded-lg text-xs font-mono"
                         style={{ background: "var(--bg-tertiary)", border: "1px solid var(--border-color)", color: "var(--text-primary)" }}
                       />
+                    </div>
+                  )}
+                </div>
+
+                {/* AI Options */}
+                <div className="rounded-lg p-3"
+                  style={{ background: "var(--bg-tertiary)", border: "1px solid var(--border-color)" }}>
+                  <div className="text-xs font-bold mb-2" style={{ color: "var(--accent-cyan)" }}>
+                    AI Analysis
+                  </div>
+                  <label className="flex items-center gap-2 text-xs cursor-pointer">
+                    <input type="checkbox" checked={aiEnabled}
+                      onChange={e => setAiEnabled(e.target.checked)}
+                      style={{ accentColor: "var(--accent-red)" }} />
+                    <span>{isRtl ? "تفعيل تحليل AI للثغرات" : "Enable AI analysis of findings"}</span>
+                  </label>
+                  {aiEnabled && (
+                    <div className="mt-3">
+                      <label className="text-xs block mb-1">
+                        {isRtl ? "أقصى عدد ثغرات للتحليل" : "Max findings to analyze"}: {aiMax}
+                      </label>
+                      <input type="range" min="1" max="50" value={aiMax}
+                        onChange={e => setAiMax(parseInt(e.target.value))}
+                        className="w-full" style={{ accentColor: "var(--accent-red)" }} />
+                      <div className="text-[10px] mt-1" style={{ color: "var(--text-muted)" }}>
+                        {isRtl ? "(أعلى = أبطأ)" : "(higher = slower)"}
+                      </div>
                     </div>
                   )}
                 </div>

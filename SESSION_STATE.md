@@ -1,102 +1,114 @@
-# Falcon MAG v2 — حالة الجلسة
+# Falcon MAG v2 - حالة الجلسة
 
-**التاريخ:** 2026-09-19  
-**آخر commit:** (سيُحدَّث بعد push)  
-**Git tag:** `v2.0-snapshot`  
-
----
-
-## ✅ ما تم إنجازه
-
-### 1. تنظيف المشروع
-- تقليص الملفات من **1091 → 94**
-- حذف 19 ملف فوضى (shell errors)
-- حذف 3 auth modules قديمة
-- تحديث `.gitignore` + إضافة `.dockerignore`
-
-### 2. AI Provider Config System (Backend)
-- **`framework/core/ai_config_store.py`** — تشفير Fernet + hot reload
-  - 9 مزودين: DeepSeek, OpenAI, Anthropic, Gemini, Groq, Mistral, OpenRouter, Together, Ollama
-  - تخزين مشفّر في `framework/config/ai_config.json`
-  - Master key في `framework/config/.ai_master_key` (مُستثنى من Git)
-- **`web/backend/api/ai_config.py`** — 8 endpoints REST
-  - `GET /api/ai/providers` — قائمة المزودين
-  - `GET /api/ai/config` — الإعدادات الحالية
-  - `POST /api/ai/config` — حفظ مزود
-  - `POST /api/ai/activate` — تفعيل
-  - `DELETE /api/ai/config/{provider}` — حذف
-  - `POST /api/ai/test` — اختبار الاتصال
-  - `GET /api/ai/models/{provider}` — الموديلات
-  - `POST /api/ai/clear` — مسح
-- **`web/backend/main.py`** — تسجيل `ai_config.router`
-
-### 3. Docker Fixes
-- **Dockerfile**: استبدال `apt install exploitdb` بـ `git clone` (Debian Trixie compat)
-- **importlib fix**: تحميل `ai_config_store` بـ absolute path بدلاً من `sys.path` (حل تعارض `core/`)
+**التاريخ:** 2026-09-19
+**آخر tag:** `v2.3-ai-summary-robust`
 
 ---
 
-## 🔴 مشاكل معروفة (للمستقبل)
+## ما تم إنجازه (الجلسة الحالية)
 
-### 1. `core/` مزدوج
-- `web/backend/core/` (backend)
-- `framework/core/` (framework)
-- **الحل الدائم:** إعادة تسمية `framework/core/` → `framework/falcon_core/`
-- **الحل المؤقت:** `importlib.util` (مستخدم حالياً في `ai_config.py`)
+### 1. AI Pipeline كامل (end-to-end)
+- **framework/cli.py**: AI تلقائي بعد كل scan
+  - flag جديد: --no-ai (تعطيل AI)
+  - flag جديد: --ai-max N (حد أقصى للتحليل، افتراضي 20)
+  - استدعاء analyze_all_findings + generate_executive_summary قبل generate_reports
+- **framework/core/ai_analyzer.py**: تحسين generate_executive_summary
+  - max_tokens: 1500 -> 2000 (مع retry بـ 2500)
+  - Retry عند الفراغ
+  - Fallback محلي _build_local_summary (مضمون 100%)
 
-### 2. `config.py` BASE_DIR خاطئ
-- `Path(__file__).resolve().parent.parent.parent.parent`
-- داخل Docker → `BASE_DIR = /` (خطأ)
-- **الحل الحالي:** `docker-compose.yml` overrides
-- **الحل الدائم:** استخدام `Path("/app")` كـ fallback
+### 2. Report Metadata Fix
+- **framework/cli.py**: _run_scan يملأ الآن:
+  - results[timestamp] (كان فارغاً)
+  - results[duration] (كان 0)
+  - results[modules_run] (كان فارغاً)
+  - results[http_requests_count] (كان 0، يستخدم len(client.history))
 
-### 3. `web/backend/models/nightfall_core.py` ضخم
-- يحتاج refactor
-- **مؤجل** لجلسة منفصلة
+### 3. extract_findings Fix
+- **framework/core/report.py**: دالة جديدة _get_module_result
+  - تقرأ من results[module_results][name] (البنية الفعلية)
+  - fallback على results[name] (legacy)
+  - قبل الإصلاح: 0 findings دائماً
+  - بعد الإصلاح: كل الـ findings تُستخرج
 
----
-
-## 🎯 المهمة التالية (جلسة جديدة)
-
-### 1. Frontend AI Settings Page
-- **ملف:** `web/frontend/src/v2/pages/AISettingsV2.jsx` 🆕
-- **المحتوى:**
-  - Dropdown لاختيار المزود (9 مزودين)
-  - Input لـ API key (يُخفي + زر إظهار)
-  - Dropdown للموديل (يتحمّل من `/api/ai/models/{provider}`)
-  - Input لـ Base URL (auto-fill)
-  - زر Test Connection
-  - زر Save
-  - قائمة المزودين المُعدّين + Activate/Delete
-
-### 2. Route
-- **`web/frontend/src/v2/App.jsx`**: إضافة `/v2/ai-settings`
-
-### 3. Sidebar
-- **`web/frontend/src/v2/components/TacticalSidebar.jsx`**: إضافة رابط في قسم "الإعدادات"
-
-### 4. i18n
-- **`web/frontend/src/v2/i18n.js`** + `locales/ar.json` + `locales/en.json`
-
-### 5. اختبار E2E
-- افتح `/v2/ai-settings`
-- أدخل DeepSeek API key
-- اضغط Test → Save → Activate
-- تحقق: `git log` يشير إلى مزود نشط
+### 4. Git History
+| Commit | الوصف | Tag |
+|--------|-------|-----|
+| f1ffba9 | AI pipeline كامل + extract_findings fix | v2.2-ai-pipeline |
+| fc65346 | Report metadata | v2.2.1-report-metadata |
+| ac7c6a6 | --no-ai + --ai-max fix | v2.2.2-no-ai-fix |
+| 280c383 | Executive summary robust | v2.3-ai-summary-robust |
 
 ---
 
-## 🔐 تعليمات أمنية
+## المهام التالية
 
-**Revoke مفتاح DeepSeek القديم:**
-- المفتاح: `REDACTED`
-- الرابط: https://platform.deepseek.com/api_keys
-- **الحالة:** ⚠️ لم يُنفّذ بعد — افعله أول شيء
+### أولوية عالية
+1. **Frontend AI Display**: عرض AI في VulnDetailDrawer.jsx + DashboardV2.jsx
+2. **Smoke Tests**: اختبار الموديولات الجديدة (tech_fingerprint, nextjs_middleware_bypass, rsc_data_leakage, graphql_relay_idor, react2shell_rce, ssr_proto_pollution)
+3. **AI Model Tuning**: التفكير في deepseek-chat بدل deepseek-reasoner (أسرع 5-10x)
+
+### أولوية متوسطة
+4. **حل Auth extensions not available warning** (يظهر في كل scan)
+5. **Docker volume + --reload** للتطوير الأسرع
+
+### أولوية منخفضة
+6. **إعادة تسمية framework/core/ -> framework/falcon_core/** (حل تعارض)
+7. **web/backend/core/config.py BASE_DIR fix**
+8. **توثيق docs/AI_PIPELINE.md**
 
 ---
 
-## 🛠️ أوامر مرجعية
+## الحالة التقنية
+
+### يعمل 100%
+- AI Provider Config (9 مزودين + تشفير Fernet)
+- Frontend AI Settings (/v2/ai-settings)
+- UniversalAIClient
+- ai_analyzer (analyze_finding, analyze_all_findings, generate_executive_summary)
+- AI تلقائي بعد scan
+- Report metadata (timestamp, duration, modules_run, requests)
+- --no-ai + --ai-max flags
+- Markdown + JSON + Excel reports مع AI
+
+### يحتاج انتباه
+- AI model الحالي = deepseek-reasoner (بطيء: 15-30s/finding)
+- Auth extensions not available warning عند كل scan
+- Frontend لا يعرض AI بعد
+
+---
+
+## أوامر مرجعية
+
+### اختبار سريع
+docker compose exec backend python /app/framework/cli.py scan https://httpbin.org --modules clickjacking --ai-max 1
+
+### اختبار بدون AI
+docker compose exec backend python /app/framework/cli.py scan https://httpbin.org --modules clickjacking --no-ai
+
+### عرض آخر تقرير
+docker compose exec backend sh -c "ls -t /app/framework/output/*.md | head -1 | xargs head -40"
 
 ### إعادة تشغيل Backend
-```cmd
-docker compose build backend && docker compose up -d backend
+docker compose restart backend
+
+---
+
+## ملاحظات مهمة
+
+1. Windows CMD لا يعرض النص العربي بشكل صحيح - استخدم VS Code
+2. deepseek-reasoner يستهلك tokens كثيرة - قد يفشل بدون سبب واضح
+3. --ai-max يُمرَّر إلى _run_scan - تأكد من وجوده عند إضافة كود
+4. BOM: بعد أي Set-Content -Encoding UTF8 في PowerShell، أزل BOM يدوياً
+5. CRLF vs LF: PowerShell ينشئ CRLF، Git يحوّله تلقائياً
+
+---
+
+## أمان
+
+- .ai_master_key خارج Git
+- ai_config.json خارج Git
+- .env خارج Git
+- GitHub repo خاص
+- لا مفاتيح في Git history
+- مفتاح DeepSeek القديم لم يُلغَ بعد - راجع https://platform.deepseek.com/api_keys

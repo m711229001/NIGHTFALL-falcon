@@ -612,6 +612,8 @@ def scan(
         auth_kwargs=auth_kwargs if auth_kwargs else None,
         http_kwargs=http_kwargs if http_kwargs else None,
         parallel=parallel,
+        enable_ai=not no_ai,
+        ai_max_findings=ai_max,
     )
 
     if json_out:

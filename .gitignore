@@ -296,5 +296,9 @@ reports/
 *.subtabs_bak
 *.py.backup_*
 
+# Junk files (from CMD paste accidents)
+cd
+git
+
 # Test outputs
 test_output/

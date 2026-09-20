@@ -219,7 +219,23 @@ def run(client, config):
                 threshold = max(expected_sleep - 0.5, base_time * 2 + 3)
 
                 if elapsed >= threshold:
-                    log.warning(f"  SQLi (time-based) in '{param}' — {elapsed:.2f}s (baseline {base_time:.2f}s, threshold {threshold:.2f}s)")
+                    # === DOUBLE VERIFICATION (ADDED 2026-09-20) ===
+                    # Run the same payload again to rule out network jitter
+                    log.info(f"  Suspected SQLi delay — verifying...")
+                    time.sleep(0.5)
+                    t1 = time.time()
+                    client.scan_request(test_url)
+                    elapsed2 = time.time() - t1
+
+                    # Both runs must be slow
+                    if elapsed2 < threshold * 0.8:
+                        log.info(f"  ✗ Rejected: second run {elapsed2:.2f}s < threshold {threshold:.2f}s (jitter)")
+                        continue
+
+                    elapsed = min(elapsed, elapsed2)  # use the faster one
+
+                if elapsed >= threshold:
+                    log.warning(f"  SQLi (time-based) in '{param}' — {elapsed:.2f}s+{elapsed2:.2f}s (baseline {base_time:.2f}s)")
                     result["vulnerable"].append({
                         "url": target,
                         "original_url": target,

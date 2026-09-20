@@ -313,5 +313,11 @@
     "findings": "الثغرات",
     "reports": "التقارير",
     "profiles": "Profiles"
+  },
+  "links": {
+    "title": "الروابط المكتشفة",
+    "noLinks": "لا توجد روابط",
+    "search": "ابحث...",
+    "copied": "تم النسخ"
   }
 }

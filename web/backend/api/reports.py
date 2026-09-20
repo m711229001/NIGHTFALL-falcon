@@ -10,11 +10,15 @@ BACKEND_DIR = Path(__file__).resolve().parent.parent
 
 # Report directories (searched in order)
 REPORT_DIRS = [
-    BACKEND_DIR / "reports",                # web/backend/reports/
-    BACKEND_DIR / "bug_bounty_reports",    # web/backend/bug_bounty_reports/
-    BACKEND_DIR / "core" / "nightfall" / "reports",  # legacy
-    BACKEND_DIR.parent / "reports",        # web/reports/
-    BACKEND_DIR.parent.parent / "reports", # NIGHTFALL/reports/
+    # Framework CLI reports (rich, AI-enhanced, Arabic)
+    Path("/app/framework/output"),                        # Docker path
+    BACKEND_DIR.parent.parent / "framework" / "output",   # Native path
+    # Legacy backend reports (simple, no AI)
+    BACKEND_DIR / "reports",                              # web/backend/reports/
+    BACKEND_DIR / "bug_bounty_reports",                   # web/backend/bug_bounty_reports/
+    BACKEND_DIR / "core" / "nightfall" / "reports",       # legacy
+    BACKEND_DIR.parent / "reports",                       # web/reports/
+    BACKEND_DIR.parent.parent / "reports",                # NIGHTFALL/reports/
 ]
 
 router = APIRouter(prefix="/api/reports", tags=["reports"])

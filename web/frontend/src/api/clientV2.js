@@ -36,12 +36,17 @@ clientV2.interceptors.response.use(
 // Framework Scan API (/api/v2/scans/*)
 // ============================================================
 export const frameworkScanApi = {
-  start:    (data)                => clientV2.post("/api/v2/scans/start", data),
-  status:   (scanId)              => clientV2.get(`/api/v2/scans/status/${scanId}`),
-  log:      (scanId, tail = 200)  => clientV2.get(`/api/v2/scans/log/${scanId}?tail=${tail}`),
-  cancel:   (scanId)              => clientV2.post(`/api/v2/scans/cancel/${scanId}`),
-  list:     ()                    => clientV2.get("/api/v2/scans/list"),
-  diagnose: ()                    => clientV2.get("/api/v2/scans/diagnose"),
+  start:        (data)                => clientV2.post("/api/v2/scans/start", data),
+  status:       (scanId)              => clientV2.get(`/api/v2/scans/status/${scanId}`),
+  log:          (scanId, tail = 200)  => clientV2.get(`/api/v2/scans/log/${scanId}?tail=${tail}`),
+  cancel:       (scanId)              => clientV2.post(`/api/v2/scans/cancel/${scanId}`),
+  pause:        (scanId)              => clientV2.post(`/api/v2/scans/pause/${scanId}`),
+  resume:       (scanId)              => clientV2.post(`/api/v2/scans/resume/${scanId}`),
+  report:       (scanId)              => clientV2.get(`/api/v2/scans/report/${scanId}`),
+  links:        (scanId)              => clientV2.get(`/api/v2/scans/links/${scanId}`),
+  linksLatest:  ()                    => clientV2.get("/api/v2/scans/links-latest"),
+  list:         ()                    => clientV2.get("/api/v2/scans/list"),
+  diagnose:     ()                    => clientV2.get("/api/v2/scans/diagnose"),
 };
 
 // ============================================================

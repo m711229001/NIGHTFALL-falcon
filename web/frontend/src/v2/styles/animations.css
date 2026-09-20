@@ -1,0 +1,48 @@
+/* Falcon MAG v2 - Animations */
+
+@keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
+@keyframes slideInRight { from { transform: translateX(20px); opacity: 0; } to { transform: translateX(0); opacity: 1; } }
+@keyframes slideInUp { from { transform: translateY(20px); opacity: 0; } to { transform: translateY(0); opacity: 1; } }
+@keyframes scaleIn { from { transform: scale(0.95); opacity: 0; } to { transform: scale(1); opacity: 1; } }
+@keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.5; } }
+@keyframes glowPulse {
+  0%, 100% { box-shadow: 0 0 12px rgba(220, 38, 38, 0.3); }
+  50% { box-shadow: 0 0 28px rgba(220, 38, 38, 0.7); }
+}
+@keyframes spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
+@keyframes shimmer {
+  0% { background-position: -1000px 0; }
+  100% { background-position: 1000px 0; }
+}
+
+.anim-fade-in    { animation: fadeIn var(--duration-normal) var(--ease-out); }
+.anim-slide-right { animation: slideInRight var(--duration-normal) var(--ease-out); }
+.anim-slide-up    { animation: slideInUp var(--duration-normal) var(--ease-out); }
+.anim-scale-in    { animation: scaleIn var(--duration-fast) var(--ease-out); }
+.anim-pulse       { animation: pulse 2s ease-in-out infinite; }
+.anim-glow-pulse  { animation: glowPulse 2s ease-in-out infinite; }
+.anim-spin        { animation: spin 1s linear infinite; }
+
+.hover-lift {
+  transition: transform var(--duration-normal) var(--ease-out),
+              box-shadow var(--duration-normal) var(--ease-out),
+              border-color var(--duration-normal) var(--ease-out);
+}
+.hover-lift:hover {
+  transform: translateY(-2px);
+  box-shadow: var(--shadow-lg);
+  border-color: var(--border-hover);
+}
+
+.skeleton {
+  background: linear-gradient(90deg, var(--bg-tertiary) 0%, var(--bg-elevated) 50%, var(--bg-tertiary) 100%);
+  background-size: 1000px 100%;
+  animation: shimmer 2s linear infinite;
+}
+
+.gradient-text {
+  background: linear-gradient(135deg, var(--accent-red), var(--accent-purple));
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
+}

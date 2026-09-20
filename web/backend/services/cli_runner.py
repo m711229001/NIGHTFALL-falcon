@@ -12,6 +12,7 @@ Executes `framework/cli.py` via subprocess with:
 import asyncio
 import json
 import os
+import re
 import shutil
 import signal
 import sqlite3
@@ -96,6 +97,15 @@ class ScanState:
     args: List[str] = field(default_factory=list)
     db_scan_id: Optional[int] = None   # ADDED: falcon.db row id
 
+    # ADDED 2026-09-20: live progress
+    progress_percent: int = 0
+    modules_total: int = 0
+    modules_done: int = 0
+    current_module: str = ""
+    findings_live: Dict[str, int] = field(default_factory=lambda: {
+        "critical": 0, "high": 0, "medium": 0, "low": 0, "info": 0
+    })
+
     def to_dict(self, tail: int = 200) -> dict:
         d = asdict(self)
         d["stdout_lines"] = self.stdout_lines[-tail:]
@@ -135,6 +145,57 @@ def list_scans() -> List[dict]:
 # ============================================================
 def _log_path(scan_id: str) -> Path:
     return LOGS_DIR / f"{scan_id}.log"
+
+
+# ============================================================
+# Progress tracking (ADDED 2026-09-20)
+# ============================================================
+_MODULE_START_RE = re.compile(r"\[INFO\s*\]\s*([a-z_]+):\s")
+_FINDING_RE = re.compile(r"\[(WARNING|CRITICAL)\s*\]\s*([a-z_]+):")
+_SEVERITY_HINTS = {
+    "critical": ["critical", "rce", "sqli", "ssti", "command_injection"],
+    "high":     ["high", "xss", "ssrf", "idor", "path_traversal", "lfi"],
+    "medium":   ["medium", "csrf", "open_redirect", "cors"],
+    "low":      ["low", "cookie", "header"],
+    "info":     ["info", "notice", "disclosure"],
+}
+
+def _guess_severity(text: str) -> str:
+    t = (text or "").lower()
+    for sev, hints in _SEVERITY_HINTS.items():
+        for h in hints:
+            if h in t:
+                return sev
+    return "medium"
+
+
+def _track_progress(state, line: str):
+    """Parse a log line and update progress fields on ScanState."""
+    if not line:
+        return
+    try:
+        # Module started?
+        m = _MODULE_START_RE.search(line)
+        if m:
+            mod_name = m.group(1)
+            if mod_name != state.current_module:
+                if state.current_module:
+                    state.modules_done += 1
+                state.current_module = mod_name
+                if state.modules_total > 0:
+                    state.progress_percent = min(
+                        99,
+                        int((state.modules_done / state.modules_total) * 100),
+                    )
+            return
+
+        # Finding detected?
+        fm = _FINDING_RE.search(line)
+        if fm:
+            sev = _guess_severity(line)
+            state.findings_live[sev] = state.findings_live.get(sev, 0) + 1
+    except Exception:
+        pass
 
 
 def _append_log(scan_id: str, line: str):
@@ -709,6 +770,7 @@ def run_scan_sync(
                 state.stdout_lines.append(line.rstrip("\n"))
                 stdout_buf.append(line)
                 _append_log(scan_id, line.rstrip("\n"))
+                _track_progress(state, line)
 
         def _read_stderr():
             for line in proc.stderr:  # type: ignore
@@ -739,6 +801,10 @@ def run_scan_sync(
         json_text = _extract_json("".join(stdout_buf))
         if json_text is not None:
             state.result = json_text
+
+        # Mark complete
+        state.progress_percent = 100
+        state.modules_done = state.modules_total or state.modules_done
 
         if proc.returncode == 0:
             state.status = "done"
@@ -830,6 +896,15 @@ def start_scan(
         scan_id = f"cli_{int(time.time())}_{os.getpid()}"
 
     state = ScanState(scan_id=scan_id, target=target)
+    # Count modules from kwargs (ADDED 2026-09-20)
+    try:
+        mods = kwargs.get("modules") or ""
+        if isinstance(mods, str) and mods.strip():
+            state.modules_total = len([m for m in mods.split(",") if m.strip()])
+        elif kwargs.get("all_modules"):
+            state.modules_total = 39  # framework has 39 modules
+    except Exception:
+        pass
     _register(state)
 
     args = build_scan_args(target=target, **kwargs)
@@ -840,6 +915,83 @@ def start_scan(
     )
     t.start()
     return state
+
+
+def pause_scan(scan_id: str) -> dict:
+    """Pause a running scan (SIGSTOP on process group)."""
+    state = _get(scan_id)
+    if not state:
+        return {"status": "not_found", "scan_id": scan_id}
+    if state.status != "running" or not state.pid:
+        return {"status": "not_running", "scan_id": scan_id, "state": state.status}
+    try:
+        if sys.platform == "win32":
+            return {"status": "unsupported", "message": "pause unsupported on Windows"}
+        os.killpg(os.getpgid(state.pid), signal.SIGSTOP)
+        state.status = "paused"
+        return {"status": "paused", "scan_id": scan_id}
+    except Exception as e:
+        return {"status": "error", "error": str(e)}
+
+
+def resume_scan(scan_id: str) -> dict:
+    """Resume a paused scan (SIGCONT)."""
+    state = _get(scan_id)
+    if not state:
+        return {"status": "not_found", "scan_id": scan_id}
+    if state.status != "paused":
+        return {"status": "not_paused", "scan_id": scan_id, "state": state.status}
+    try:
+        if sys.platform == "win32":
+            return {"status": "unsupported"}
+        os.killpg(os.getpgid(state.pid), signal.SIGCONT)
+        state.status = "running"
+        return {"status": "resumed", "scan_id": scan_id}
+    except Exception as e:
+        return {"status": "error", "error": str(e)}
+
+
+def get_scan_report_data(scan_id: str) -> Optional[dict]:
+    """Return the current output JSON for this scan (matched by started_at)."""
+    state = _get(scan_id)
+    if not state:
+        return None
+
+    # Parse started_at
+    scan_start = None
+    try:
+        if state.started_at:
+            ts = state.started_at.replace("Z", "+00:00")
+            scan_start = datetime.fromisoformat(ts)
+    except Exception:
+        scan_start = None
+
+    import glob
+    files = sorted(
+        glob.glob(str(OUTPUT_DIR / "scan_*.json")),
+        key=os.path.getmtime,
+        reverse=True,
+    )
+
+    for jf in files:
+        try:
+            with open(jf, encoding="utf-8") as fh:
+                data = json.load(fh)
+        except Exception:
+            continue
+
+        if scan_start and data.get("scan_date"):
+            try:
+                cand = datetime.fromisoformat(data["scan_date"].replace("Z", "+00:00"))
+                delta = abs((cand - scan_start).total_seconds())
+                if delta <= 300:
+                    return data
+            except Exception:
+                continue
+        else:
+            return data
+
+    return None
 
 
 def cancel_scan(scan_id: str) -> dict:
@@ -952,6 +1104,98 @@ def get_ai_analyses(scan_id: str) -> Optional[List[dict]]:
 
     return analyses
 
+
+
+def get_latest_endpoint_catalog() -> Optional[dict]:
+    """Return endpoint catalog from the MOST RECENT scan_*.json (no scan_id needed)."""
+    import glob
+    files = sorted(
+        glob.glob(str(OUTPUT_DIR / "scan_*.json")),
+        key=os.path.getmtime, reverse=True,
+    )
+    for jf in files[:30]:
+        try:
+            with open(jf, encoding="utf-8") as fh:
+                data = json.load(fh)
+        except Exception:
+            continue
+
+        # Look for endpoint catalog in output
+        catalog_raw = data.get("_endpoint_catalog")
+        if not catalog_raw:
+            mr = data.get("module_results", {}) or {}
+            ec = mr.get("endpoint_catalog", {}) or {}
+            catalog_raw = ec.get("endpoints", [])
+
+        # Handle both dict and list structures
+        if isinstance(catalog_raw, dict):
+            catalog = catalog_raw.get("endpoints", [])
+        elif isinstance(catalog_raw, list):
+            catalog = catalog_raw
+        else:
+            catalog = []
+
+        if catalog:
+            return {
+                "scan_id": os.path.basename(jf).replace(".json", ""),
+                "target": data.get("target", ""),
+                "scan_date": data.get("scan_date", ""),
+                "total": len(catalog),
+                "endpoints": catalog,
+            }
+
+    # Also try bug_bounty_reports summaries (fallback)
+    return None
+
+
+def get_endpoint_catalog(scan_id: str) -> Optional[dict]:
+    """Return endpoint catalog for a scan (from output JSON)."""
+    state = _get(scan_id)
+    scan_start = None
+    if state and state.started_at:
+        try:
+            ts = state.started_at.replace("Z", "+00:00")
+            scan_start = datetime.fromisoformat(ts)
+        except Exception:
+            scan_start = None
+
+    # Search output JSONs
+    import glob
+    files = sorted(glob.glob(str(OUTPUT_DIR / "scan_*.json")),
+                   key=os.path.getmtime, reverse=True)
+
+    for jf in files[:20]:
+        try:
+            with open(jf, encoding="utf-8") as fh:
+                data = json.load(fh)
+        except Exception:
+            continue
+
+        if scan_start and data.get("scan_date"):
+            try:
+                cand = datetime.fromisoformat(data["scan_date"].replace("Z", "+00:00"))
+                delta = abs((cand - scan_start).total_seconds())
+                if delta > 600:
+                    continue
+            except Exception:
+                pass
+
+        # Try new key first, then module_results
+        catalog = data.get("_endpoint_catalog")
+        if not catalog:
+            mr = data.get("module_results", {}) or {}
+            ec = mr.get("endpoint_catalog", {}) or {}
+            catalog = ec.get("endpoints", [])
+        if catalog:
+            return {
+                "scan_id": scan_id,
+                "total": len(catalog),
+                "endpoints": catalog,
+            }
+        # Fallback: return empty
+        return {"scan_id": scan_id, "total": 0, "endpoints": []}
+
+    return None
 
 
 def get_status(scan_id: str, tail: int = 200) -> Optional[dict]:

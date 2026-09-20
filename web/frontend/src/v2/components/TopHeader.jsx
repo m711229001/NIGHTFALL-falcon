@@ -5,6 +5,7 @@ import { useState, useEffect } from "react"
 import { useTranslation } from "react-i18next"
 import { useNavigate } from "react-router-dom"
 import { useTheme, THEMES } from "../context/ThemeContext"
+import { Icon } from "./Icons"
 
 export default function TopHeader() {
   const { t, i18n } = useTranslation()
@@ -15,6 +16,11 @@ export default function TopHeader() {
   const [themeOpen, setThemeOpen] = useState(false)
   const [userOpen, setUserOpen] = useState(false)
   const [username, setUsername] = useState("")
+  const [aiStatus, setAiStatus] = useState(null)
+  const [quickOpen, setQuickOpen] = useState(false)
+  const [totpOpen, setTotpOpen] = useState(false)
+  const [totpSecret, setTotpSecret] = useState("")
+  const [totpCode, setTotpCode] = useState("")
 
   const isRtl = i18n.language === "ar"
 
@@ -51,9 +57,73 @@ export default function TopHeader() {
     return () => { active = false; clearInterval(id) }
   }, [])
 
+  // AI Status polling
+  useEffect(() => {
+    let active = true
+    const fetchAI = async () => {
+      try {
+        const token = localStorage.getItem("token") || ""
+        const r = await fetch("http://localhost:8888/api/ai/config", {
+          headers: token ? { Authorization: "Bearer " + token } : {},
+        })
+        if (active && r.ok) {
+          const data = await r.json()
+          setAiStatus(data)
+        }
+      } catch { /* silent */ }
+    }
+    fetchAI()
+    const id = setInterval(fetchAI, 60000)
+    return () => { active = false; clearInterval(id) }
+  }, [])
+
+  // Keyboard shortcuts (Ctrl+K, Escape)
+  useEffect(() => {
+    const handler = (e) => {
+      if ((e.ctrlKey || e.metaKey) && e.key === "k") {
+        e.preventDefault()
+        const searchInput = document.querySelector("input[data-search-input]")
+        if (searchInput) searchInput.focus()
+      }
+      if (e.key === "Escape") {
+        setQuickOpen(false)
+        setTotpOpen(false)
+        setThemeOpen(false)
+        setUserOpen(false)
+      }
+    }
+    document.addEventListener("keydown", handler)
+    return () => document.removeEventListener("keydown", handler)
+  }, [])
+
+  // TOTP: generate code from secret
+  const generateTotp = async () => {
+    if (!totpSecret.trim()) { setTotpCode(""); return }
+    // Fake TOTP for UI demo - real impl would call backend
+    try {
+      const token = localStorage.getItem("token") || ""
+      const r = await fetch("http://localhost:8888/api/v2/auth/totp", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          ...(token ? { Authorization: "Bearer " + token } : {}),
+        },
+        body: JSON.stringify({ secret: totpSecret }),
+      })
+      if (r.ok) {
+        const data = await r.json()
+        setTotpCode(data.code || "")
+      } else {
+        setTotpCode("")
+      }
+    } catch {
+      setTotpCode("")
+    }
+  }
+
   // Close dropdowns when clicking outside
   useEffect(() => {
-    const handler = () => { setThemeOpen(false); setUserOpen(false) }
+    const handler = () => { setThemeOpen(false); setUserOpen(false); setQuickOpen(false); setTotpOpen(false) }
     if (themeOpen || userOpen) {
       document.addEventListener("click", handler)
       return () => document.removeEventListener("click", handler)
@@ -82,6 +152,43 @@ export default function TopHeader() {
         borderColor: "var(--border-color)",
       }}
     >
+      {/* === AI Status Badge === */}
+      <button
+        onClick={() => navigate("/v2/ai-settings")}
+        className="hidden md:flex items-center gap-1.5 px-2.5 py-1.5 rounded-md text-xs font-bold transition-all hover-lift"
+        style={{
+          background: aiStatus?.active_provider
+            ? "var(--accent-purple-soft)"
+            : "var(--accent-red-soft)",
+          border: "1px solid " + (aiStatus?.active_provider
+            ? "var(--accent-purple)"
+            : "var(--accent-red)"),
+          color: aiStatus?.active_provider
+            ? "var(--accent-purple)"
+            : "var(--accent-red)",
+        }}
+        title={
+          aiStatus?.active_provider
+            ? "AI: " + (aiStatus.active_provider.name || "active")
+            : "AI not configured — click to setup"
+        }
+      >
+        <span
+          className={"w-1.5 h-1.5 rounded-full " + (aiStatus?.active_provider ? "" : "anim-pulse")}
+          style={{
+            background: aiStatus?.active_provider
+              ? "var(--accent-green)"
+              : "var(--accent-red)",
+          }}
+        />
+        <Icon name="sparkles" size={14} />
+        <span className="hidden lg:inline">
+          {aiStatus?.active_provider
+            ? (aiStatus.active_provider.name || "AI").toUpperCase()
+            : "AI OFF"}
+        </span>
+      </button>
+
       {/* === Search === */}
       <div className="flex-1 max-w-xl">
         <div className="relative">
@@ -93,6 +200,7 @@ export default function TopHeader() {
           </span>
           <input
             type="text"
+            data-search-input
             value={search}
             onChange={e => setSearch(e.target.value)}
             placeholder={t("header.searchPlaceholder")}
@@ -119,6 +227,67 @@ export default function TopHeader() {
           </span>
         )}
       </button>
+
+      {/* === TOTP Widget === */}
+      <div className="relative" onClick={e => e.stopPropagation()}>
+        <button
+          onClick={() => { setTotpOpen(!totpOpen); setQuickOpen(false); setThemeOpen(false); setUserOpen(false) }}
+          className="p-2 rounded-md transition-colors"
+          style={{ color: "var(--text-secondary)" }}
+          title="TOTP Generator"
+        >
+          <Icon name="key" size={18} />
+        </button>
+
+        {totpOpen && (
+          <div
+            className={`absolute top-full mt-2 z-50 rounded-md shadow-lg p-4 min-w-[280px] anim-scale-in ${isRtl ? "left-0" : "right-0"}`}
+            style={{
+              background: "var(--bg-secondary)",
+              border: "1px solid var(--border-color)",
+            }}
+          >
+            <div className="text-xs font-bold mb-3" style={{ color: "var(--accent-cyan)" }}>
+              TOTP Generator
+            </div>
+            <input
+              type="text"
+              value={totpSecret}
+              onChange={e => setTotpSecret(e.target.value)}
+              placeholder="Enter base32 secret"
+              className="w-full px-3 py-2 rounded text-xs font-mono mb-2"
+              style={{
+                background: "var(--bg-tertiary)",
+                border: "1px solid var(--border-color)",
+                color: "var(--text-primary)",
+              }}
+            />
+            <button
+              onClick={generateTotp}
+              className="w-full py-2 rounded text-xs font-bold mb-3"
+              style={{
+                background: "var(--accent-red)",
+                color: "white",
+                cursor: "pointer",
+              }}
+            >
+              Generate
+            </button>
+            {totpCode && (
+              <div
+                className="text-center text-2xl font-mono font-bold py-3 rounded"
+                style={{
+                  background: "var(--accent-green-soft)",
+                  color: "var(--accent-green)",
+                  border: "1px solid var(--accent-green)",
+                }}
+              >
+                {totpCode}
+              </div>
+            )}
+          </div>
+        )}
+      </div>
 
       {/* === Theme Switcher === */}
       <div className="relative" onClick={e => e.stopPropagation()}>
@@ -168,6 +337,61 @@ export default function TopHeader() {
       >
         {isRtl ? "EN" : "AR"}
       </button>
+
+      {/* === Quick Actions === */}
+      <div className="relative" onClick={e => e.stopPropagation()}>
+        <button
+          onClick={() => { setQuickOpen(!quickOpen); setTotpOpen(false); setThemeOpen(false); setUserOpen(false) }}
+          className="p-2 rounded-md transition-colors"
+          style={{ color: "var(--text-secondary)" }}
+          title="Quick actions"
+        >
+          <Icon name="sparkles" size={18} />
+        </button>
+
+        {quickOpen && (
+          <div
+            className={`absolute top-full mt-2 z-50 rounded-md shadow-lg py-1 min-w-[200px] anim-scale-in ${isRtl ? "left-0" : "right-0"}`}
+            style={{
+              background: "var(--bg-secondary)",
+              border: "1px solid var(--border-color)",
+            }}
+          >
+            <button
+              onClick={() => { navigate("/v2/framework-scan"); setQuickOpen(false) }}
+              className="w-full text-start px-3 py-2 text-xs flex items-center gap-2"
+              style={{ color: "var(--text-primary)" }}
+            >
+              <Icon name="target" size={14} />
+              Framework Scan
+            </button>
+            <button
+              onClick={() => { navigate("/v2/findings"); setQuickOpen(false) }}
+              className="w-full text-start px-3 py-2 text-xs flex items-center gap-2"
+              style={{ color: "var(--text-primary)" }}
+            >
+              <Icon name="findings" size={14} />
+              Findings
+            </button>
+            <button
+              onClick={() => { navigate("/v2/reports"); setQuickOpen(false) }}
+              className="w-full text-start px-3 py-2 text-xs flex items-center gap-2"
+              style={{ color: "var(--text-primary)" }}
+            >
+              <Icon name="reports" size={14} />
+              Reports
+            </button>
+            <button
+              onClick={() => { navigate("/v2/profiles"); setQuickOpen(false) }}
+              className="w-full text-start px-3 py-2 text-xs flex items-center gap-2"
+              style={{ color: "var(--text-primary)" }}
+            >
+              <Icon name="profiles" size={14} />
+              Profiles
+            </button>
+          </div>
+        )}
+      </div>
 
       {/* === New Scan === */}
       <button

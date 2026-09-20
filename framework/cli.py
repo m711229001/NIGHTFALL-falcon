@@ -118,6 +118,7 @@ MODULE_REGISTRY = {
     "path_discovery":       "modules.path_discovery",
     "catch_all_detector":   "modules.catch_all_detector",
     "js_endpoints":         "modules.js_endpoints",
+    "endpoint_catalog":     "modules.endpoint_catalog",
     "js_secrets":           "modules.js_secrets",
     "dom_xss_scanner":      "modules.dom_xss_scanner",
     "external_nmap":        "modules.external_nmap",
@@ -150,7 +151,7 @@ MODULE_REGISTRY = {
 # ============================================================
 # Bridge: feeders run first, sequentially, before scanners
 # ============================================================
-FEEDER_MODULES = ["crawler", "playwright_crawler", "js_analyzer", "js_endpoints", "param_discovery"]
+FEEDER_MODULES = ["crawler", "playwright_crawler", "js_analyzer", "js_endpoints", "param_discovery", "endpoint_catalog"]
 
 FEEDER_KEYS = {
     "crawler":            "_crawl_result",
@@ -158,10 +159,155 @@ FEEDER_KEYS = {
     "js_analyzer":        "_js_analyzer",
     "js_endpoints":       "_js_endpoints",
     "param_discovery":    "_param_discovery",
+    "endpoint_catalog":   "_endpoint_catalog",
 }
 
 # Modules that accept a crawl_result kwarg
 MODULES_ACCEPTING_CRAWL = {"xss_scanner", "js_endpoints"}
+
+
+# ============================================================
+# SCAN MODES (ADDED 2026-09-20)
+# ============================================================
+MODE_PRESETS = {
+    "fast": {
+        "label": "Fast (30-60s)",
+        "description": "Quick recon + visible params only",
+        "modules": [
+            "fingerprint", "headers_check", "clickjacking",
+            "cors_checker", "cookies_checker", "endpoint_catalog",
+        ],
+        "param_discovery_max": 50,
+        "xss_max_params": 3,
+        "sqli_max_params": 2,
+        "max_findings_ai": 5,
+        "path_wordlist": "small",
+        "enable_ai": True,
+    },
+    "normal": {
+        "label": "Normal (3-5 min)",
+        "description": "Balanced — crawl + common params + AI",
+        "modules": [
+            "fingerprint", "headers_check", "clickjacking",
+            "cors_checker", "cookies_checker", "csrf_checker",
+            "crawler", "param_discovery",
+            "xss_scanner", "sqli_scanner",
+            "http_methods", "open_redirect", "endpoint_catalog",
+        ],
+        "param_discovery_max": 150,
+        "xss_max_params": 15,
+        "sqli_max_params": 8,
+        "max_findings_ai": 15,
+        "path_wordlist": "small",
+        "enable_ai": True,
+    },
+    "deep": {
+        "label": "Deep (15-30 min)",
+        "description": "Full crawl + JS + DOM + SSRF/IDOR",
+        "modules": [
+            "fingerprint", "headers_check", "clickjacking",
+            "cors_checker", "cookies_checker", "csrf_checker",
+            "crawler", "playwright_crawler", "param_discovery",
+            "js_analyzer", "js_secrets", "js_endpoints",
+            "dom_xss_scanner", "xss_scanner", "sqli_scanner",
+            "nosql_scanner", "ssrf_scanner", "idor_scanner",
+            "open_redirect", "path_traversal", "prototype_pollution",
+            "path_discovery", "http_methods",
+            "tls_checker", "subdomain_enum", "cve_lookup", "endpoint_catalog",
+        ],
+        "param_discovery_max": 300,
+        "xss_max_params": 40,
+        "sqli_max_params": 20,
+        "max_findings_ai": 30,
+        "path_wordlist": "medium",
+        "enable_ai": True,
+    },
+    "ultra": {
+        "label": "Ultra (1-3 hours)",
+        "description": "Everything + external tools + full wordlists",
+        "modules": "ALL",
+        "param_discovery_max": 9999,
+        "xss_max_params": 200,
+        "sqli_max_params": 100,
+        "max_findings_ai": 50,
+        "path_wordlist": "full",
+        "enable_ai": True,
+    },
+    "custom": {
+        "label": "Custom",
+        "description": "User-selected vulnerability focus",
+        "modules": [],  # resolved from --focus
+        "param_discovery_max": 150,
+        "xss_max_params": 20,
+        "sqli_max_params": 10,
+        "max_findings_ai": 20,
+        "path_wordlist": "small",
+        "enable_ai": True,
+    },
+}
+
+
+# Focus → modules mapping (for custom mode)
+FOCUS_MAP = {
+    "xss":      ["xss_scanner", "dom_xss_scanner"],
+    "sqli":     ["sqli_scanner", "nosql_scanner"],
+    "ssrf":     ["ssrf_scanner"],
+    "idor":     ["idor_scanner"],
+    "csrf":     ["csrf_checker"],
+    "redirect": ["open_redirect"],
+    "lfi":      ["path_traversal"],
+    "rce":      ["prototype_pollution"],
+    "cors":     ["cors_checker"],
+    "headers":  ["headers_check"],
+    "cookies":  ["cookies_checker"],
+    "tls":      ["tls_checker"],
+    "ports":    ["port_scanner"],
+    "js":       ["js_analyzer", "js_secrets", "js_endpoints"],
+    "dom":      ["dom_xss_scanner"],
+    "recon":    ["crawler", "fingerprint", "path_discovery", "subdomain_enum"],
+    "params":   ["param_discovery"],
+    "all":      "ALL",
+}
+
+
+def _resolve_modules_from_mode(mode: str, focus: list, explicit: list):
+    """Resolve module list from scan mode."""
+    if explicit:
+        return explicit
+
+    if mode == "custom":
+        if not focus:
+            log.warning("  --mode custom requires --focus or --modules")
+            # Fallback to normal
+            return MODE_PRESETS["normal"]["modules"]
+        resolved = set()
+        for f in focus:
+            f = f.lower().strip()
+            mapped = FOCUS_MAP.get(f)
+            if mapped == "ALL":
+                return None  # means all modules
+            if mapped:
+                resolved.update(mapped)
+        # Always add recon in custom mode
+        resolved.update(["fingerprint", "headers_check", "crawler", "param_discovery"])
+        return sorted(resolved)
+
+    preset = MODE_PRESETS.get(mode, MODE_PRESETS["normal"])
+    mods = preset.get("modules")
+    if mods == "ALL":
+        return None  # all modules
+    return list(mods)
+
+
+def _print_mode_banner(mode: str, focus: list, module_count: int):
+    """Print mode info."""
+    preset = MODE_PRESETS.get(mode, {})
+    label = preset.get("label", mode)
+    desc = preset.get("description", "")
+    console.print(f"[bold cyan]Mode:[/bold cyan] [yellow]{label}[/yellow]  [dim]({desc})[/dim]")
+    if focus:
+        console.print(f"[bold cyan]Focus:[/bold cyan] [magenta]{', '.join(focus)}[/magenta]")
+    console.print(f"[bold cyan]Modules:[/bold cyan] [green]{module_count}[/green]")
 
 # ============================================================
 # Helpers
@@ -342,7 +488,8 @@ def _run_scan(target: str, module_names: list, config_path: str = None,
               output_override: str = None, quiet: bool = False,
               auth_kwargs: dict = None, http_kwargs: dict = None,
               parallel: int = 1,
-              enable_ai: bool = True, ai_max_findings: int = 20):
+              enable_ai: bool = True, ai_max_findings: int = 20,
+              scan_mode: str = "normal"):
     """Core scan engine: feeders first (sequential), then parallel batch."""
     start_time = time.time()
 
@@ -354,6 +501,12 @@ def _run_scan(target: str, module_names: list, config_path: str = None,
         config.setdefault("scan", {})["verify_ssl"] = False
 
     apply_target(config, target)
+
+    # === Store scan mode (ADDED 2026-09-20) ===
+    config["_scan_mode"] = scan_mode
+    _mode_preset = MODE_PRESETS.get(scan_mode, {})
+    config["_mode_preset"] = _mode_preset
+    # === END ===
 
     # === Preflight: fast-fail on unreachable targets ===
     if not quiet:
@@ -384,8 +537,38 @@ def _run_scan(target: str, module_names: list, config_path: str = None,
     if not quiet:
         _print_banner(target, module_names)
 
+    # ---- Apply auth config (ADDED 2026-09-20) ----
+    if auth_kwargs:
+        if auth_kwargs.get("manual_cookie"):
+            config["_manual_cookie"] = auth_kwargs["manual_cookie"]
+        if auth_kwargs.get("bearer_token"):
+            config["_bearer_token"] = auth_kwargs["bearer_token"]
+        if auth_kwargs.get("username") and auth_kwargs.get("password"):
+            config["_auth_username"] = auth_kwargs["username"]
+            config["_auth_password"] = auth_kwargs["password"]
+        if auth_kwargs.get("login_url"):
+            config["_login_url"] = auth_kwargs["login_url"]
+
+    # Extra headers from scan
+    if http_kwargs and http_kwargs.get("extra_headers"):
+        config["_auth_headers"] = http_kwargs["extra_headers"]
+
     # ---- HTTP client ----
     client = HTTPClient(config=config, **(http_kwargs or {}))
+
+    # ---- Verify auth (ADDED) ----
+    has_auth = bool(config.get("_manual_cookie") or config.get("_bearer_token"))
+    if has_auth and not quiet:
+        log.info("[auth] Verifying authenticated session...")
+    if has_auth:
+        ok, reason = client.verify_auth(target)
+        config["_auth_verified"] = ok
+        config["_auth_reason"] = reason
+        if not quiet:
+            if ok:
+                log.info(f"[auth] ✓ Session active ({reason})")
+            else:
+                log.warning(f"[auth] ✗ Session may be invalid: {reason}")
 
     results = {
         "target": target,
@@ -515,6 +698,36 @@ def _run_scan(target: str, module_names: list, config_path: str = None,
             log.exception(f"[AI] Enrichment failed: {e}")
 
     # ==========================================================
+    # Persist feeders to results (ADDED 2026-09-20)
+    # ==========================================================
+    try:
+        if "_endpoint_catalog" in config:
+            ec = config["_endpoint_catalog"]
+            # If dict, store just the endpoints list
+            if isinstance(ec, dict):
+                results["_endpoint_catalog"] = ec.get("endpoints", [])
+            else:
+                results["_endpoint_catalog"] = ec
+        if "_discovered_params" in config:
+            results["_discovered_params"] = config["_discovered_params"]
+        if "_discovered_endpoints" in config:
+            results["_discovered_endpoints"] = config["_discovered_endpoints"]
+        if "_crawl_result" in config and isinstance(config["_crawl_result"], dict):
+            crawl = config["_crawl_result"]
+            results["_crawl_summary"] = {
+                "pages": len(crawl.get("pages", []) or []),
+                "forms": len(crawl.get("forms", []) or []),
+                "js_files": len(crawl.get("js_files", []) or []),
+                "xhr": len(crawl.get("xhr_requests", []) or []),
+            }
+        if not quiet:
+            ec = results.get("_endpoint_catalog", [])
+            log.info(f"  [persist] Saved {len(ec)} endpoints to results")
+    except Exception as _e:
+        log.debug(f"  [persist] failed: {_e}")
+    # ==========================================================
+
+    # ==========================================================
     # Reports
     # ==========================================================
     total_elapsed = time.time() - start_time
@@ -576,13 +789,43 @@ def scan(
     totp_secret: str = typer.Option(None, "--totp-secret", help="TOTP secret (base32) for 2FA."),
     no_ai: bool = typer.Option(False, "--no-ai", help="Disable AI analysis after scan."),
     ai_max: int = typer.Option(20, "--ai-max", help="Max findings to analyze with AI (default: 20)."),
+    mode: str = typer.Option(
+        "normal", "--mode",
+        help="Scan mode: fast | normal | deep | ultra | custom",
+    ),
+    focus: str = typer.Option(
+        None, "--focus",
+        help="Vuln focus for custom mode (e.g. xss,sqli,ssrf,idor). Use with --mode custom.",
+    ),
 ):
     """Run a security scan against TARGET."""
-    module_list = None
+    # === MODE RESOLUTION (ADDED 2026-09-20) ===
+    focus_list = []
+    if focus:
+        focus_list = [f.strip().lower() for f in focus.split(",") if f.strip()]
+
+    # Check if mode is valid
+    if mode not in MODE_PRESETS:
+        console.print(f"[yellow]Unknown mode '{mode}' — using 'normal'[/yellow]")
+        mode = "normal"
+
+    explicit_modules = None
     if modules:
-        module_list = [m.strip() for m in modules.split(",") if m.strip()]
-    elif not all_modules:
+        explicit_modules = [m.strip() for m in modules.split(",") if m.strip()]
+
+    # Resolve module list
+    module_list = _resolve_modules_from_mode(mode, focus_list, explicit_modules)
+
+    # Show mode banner
+    if not quiet:
+        count = len(module_list) if module_list else 39
+        _print_mode_banner(mode, focus_list, count)
+
+    # If module_list is None (ultra/all), set all_modules=True
+    if module_list is None:
+        all_modules = True
         module_list = None
+    # === END MODE RESOLUTION ===
 
     # ---- Auth kwargs ----
     auth_kwargs = {}
@@ -662,6 +905,18 @@ def scan(
         if headers:
             http_kwargs["extra_headers"] = headers
 
+    # Compute mode-specific AI max
+    try:
+        _preset = MODE_PRESETS.get(mode, {})
+        _mode_ai_max = _preset.get("max_findings_ai", ai_max)
+        if ai_max == 20:  # user did not override
+            ai_max = _mode_ai_max
+        if mode == "fast" and not no_ai:
+            # In fast mode, keep AI for top findings only
+            ai_max = min(ai_max, 5)
+    except Exception:
+        pass
+
     results = _run_scan(
         target=target,
         module_names=module_list,
@@ -673,6 +928,7 @@ def scan(
         parallel=parallel,
         enable_ai=not no_ai,
         ai_max_findings=ai_max,
+        scan_mode=mode,
     )
 
     if json_out:
@@ -855,6 +1111,57 @@ def list_auth_types():
     for i, name in enumerate(auth_available(), 1):
         table.add_row(str(i), name, desc.get(name, ""))
     console.print(table)
+
+
+@app.command()
+def triage(
+    scan_file: str = typer.Argument(..., help="Path to scan JSON file (or 'latest')."),
+    max_findings: int = typer.Option(30, "--max", help="Max findings to triage."),
+):
+    """AI-triage findings from a previous scan."""
+    import json as _json
+    from pathlib import Path as _Path
+
+    # Resolve file
+    if scan_file == "latest":
+        out_dir = FRAMEWORK_DIR / "output"
+        jsons = sorted(out_dir.glob("scan_*.json"),
+                       key=lambda p: p.stat().st_mtime, reverse=True)
+        if not jsons:
+            console.print("[red]No scan files found[/red]")
+            raise typer.Exit(1)
+        scan_file = str(jsons[0])
+
+    path = _Path(scan_file)
+    if not path.exists():
+        console.print(f"[red]File not found: {scan_file}[/red]")
+        raise typer.Exit(1)
+
+    console.print(f"[cyan]Loading {path.name}...[/cyan]")
+    data = _json.loads(path.read_text(encoding="utf-8"))
+    findings = data.get("_ai_enriched") or data.get("findings") or []
+    console.print(f"[cyan]Findings: {len(findings)}[/cyan]")
+
+    from modules.ai_triage import run as triage_run
+    result = triage_run(None, {}, findings=findings, max_findings=max_findings)
+
+    # Save
+    out_path = path.with_name(path.stem + "_triage.json")
+    out_path.write_text(_json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8")
+    console.print(f"[green]Saved: {out_path}[/green]")
+
+    # Print top 10
+    console.print()
+    console.print("[bold]Top findings by exploitability:[/bold]")
+    for i, f in enumerate(result["items"][:10], 1):
+        t = f.get("_triage", {})
+        worthy = "[green]★[/green]" if t.get("bugbounty_worthy") else " "
+        console.print(
+            f"  {i:2d}. {worthy} "
+            f"[yellow]{t.get('exploitability_score',0):3d}[/yellow] | "
+            f"[magenta]{t.get('real_cvss',0):.1f}[/magenta] | "
+            f"{f.get('title','')[:70]}"
+        )
 
 
 def main():

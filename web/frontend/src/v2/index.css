@@ -3,6 +3,8 @@
    ============================================================ */
 
 @import "tailwindcss";
+@import "./styles/design-tokens.css";
+@import "./styles/animations.css";
 
 :root,
 [data-theme="dark"] {

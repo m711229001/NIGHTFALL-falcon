@@ -148,6 +148,41 @@ async def get_ai_analyses_v2(
 
 
 
+@router.post("/pause/{scan_id}")
+async def pause_scan_v2(scan_id: str, user: dict = Depends(get_current_user)):
+    return cli_runner.pause_scan(scan_id)
+
+
+@router.post("/resume/{scan_id}")
+async def resume_scan_v2(scan_id: str, user: dict = Depends(get_current_user)):
+    return cli_runner.resume_scan(scan_id)
+
+
+@router.get("/report/{scan_id}")
+async def get_report_v2(scan_id: str, user: dict = Depends(get_current_user)):
+    data = cli_runner.get_scan_report_data(scan_id)
+    if data is None:
+        raise HTTPException(status_code=404, detail=f"No report data for scan: {scan_id}")
+    return data
+
+
+@router.get("/links-latest")
+async def get_links_latest_v2(user: dict = Depends(get_current_user)):
+    """Return endpoint catalog from the most recent scan (no scan_id)."""
+    data = cli_runner.get_latest_endpoint_catalog()
+    if data is None:
+        return {"scan_id": None, "target": "", "total": 0, "endpoints": []}
+    return data
+
+
+@router.get("/links/{scan_id}")
+async def get_links_v2(scan_id: str, user: dict = Depends(get_current_user)):
+    data = cli_runner.get_endpoint_catalog(scan_id)
+    if data is None:
+        raise HTTPException(status_code=404, detail=f"No data for scan: {scan_id}")
+    return data
+
+
 @router.get("/diagnose")
 async def diagnose_v2(user: dict = Depends(get_current_user)):
     """Check that framework/cli.py is reachable from inside the container."""

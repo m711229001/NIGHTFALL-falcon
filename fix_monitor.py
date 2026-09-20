@@ -1,4 +1,9 @@
-/**
+﻿# -*- coding: utf-8 -*-
+from pathlib import Path
+
+f = Path(r"C:\BugBounty\NIGHTFALL\web\frontend\src\v2\pages\LiveMonitorV2.jsx")
+
+new_content = r'''/**
  * LiveMonitorV2 - Live view of framework scans (v2 endpoints)
  */
 import { useEffect, useState, useRef } from "react"
@@ -17,8 +22,6 @@ export default function LiveMonitorV2() {
   const [error, setError] = useState("")
   const logRef = useRef(null)
   const stoppedRef = useRef(false)
-  const [isPaused, setIsPaused] = useState(false)
-  const [exporting, setExporting] = useState(false)
 
   // ---- 1) Find latest scan ONCE on mount ----
   useEffect(() => {
@@ -92,43 +95,6 @@ export default function LiveMonitorV2() {
     } catch { /* ignore */ }
   }
 
-  const pauseScan = async () => {
-    if (!scanId) return
-    try {
-      const r = await frameworkScanApi.pause(scanId)
-      if (r.data?.status === "paused") setIsPaused(true)
-    } catch { /* ignore */ }
-  }
-
-  const resumeScan = async () => {
-    if (!scanId) return
-    try {
-      const r = await frameworkScanApi.resume(scanId)
-      if (r.data?.status === "resumed") setIsPaused(false)
-    } catch { /* ignore */ }
-  }
-
-  const exportReport = async () => {
-    if (!scanId) return
-    setExporting(true)
-    try {
-      const r = await frameworkScanApi.report(scanId)
-      const data = r.data || {}
-      // Download JSON
-      const jsonBlob = new Blob([JSON.stringify(data, null, 2)], { type: "application/json;charset=utf-8" })
-      const jsonUrl = URL.createObjectURL(jsonBlob)
-      const a1 = document.createElement("a")
-      a1.href = jsonUrl
-      a1.download = scanId + ".json"
-      document.body.appendChild(a1); a1.click(); document.body.removeChild(a1)
-      URL.revokeObjectURL(jsonUrl)
-    } catch (e) {
-      alert("Export failed: " + (e?.response?.data?.detail || e?.message || "unknown"))
-    } finally {
-      setExporting(false)
-    }
-  }
-
   const restart = () => {
     stoppedRef.current = false
     setScanId(null)
@@ -157,7 +123,7 @@ export default function LiveMonitorV2() {
                 style={{ color: "var(--accent-red)" }}
               >
                 <Icon name="monitor" size={28} />
-                {t("liveMonitor.title", "Live Monitor")}
+                {t("live_monitor", "Live Monitor")}
               </h1>
               <p className="text-sm mt-1 font-mono" style={{ color: "var(--text-secondary)" }}>
                 {scanId ? scanId : t("no_active_scan", "No active scan")}
@@ -188,63 +154,6 @@ export default function LiveMonitorV2() {
               >
                 <Icon name="refresh" size={16} />
               </button>
-
-              {/* Control buttons (ADDED 2026-09-20) */}
-              {scanId && (
-                <div className="flex gap-2">
-                  {status?.status === "running" && !isPaused && (
-                    <button onClick={pauseScan}
-                      className="px-3 py-1.5 rounded-md text-xs font-bold flex items-center gap-1.5"
-                      style={{
-                        background: "rgba(234,179,8,0.15)",
-                        color: "var(--accent-yellow)",
-                        border: "1px solid var(--accent-yellow)",
-                        cursor: "pointer",
-                      }}
-                      title="Pause scan">
-                      <Icon name="pause" size={14} /> {isRtl ? "إيقاف مؤقت" : "Pause"}
-                    </button>
-                  )}
-                  {isPaused && (
-                    <button onClick={resumeScan}
-                      className="px-3 py-1.5 rounded-md text-xs font-bold flex items-center gap-1.5"
-                      style={{
-                        background: "rgba(16,185,129,0.15)",
-                        color: "var(--accent-green)",
-                        border: "1px solid var(--accent-green)",
-                        cursor: "pointer",
-                      }}
-                      title="Resume scan">
-                      <Icon name="play" size={14} /> {isRtl ? "استئناف" : "Resume"}
-                    </button>
-                  )}
-                  {(status?.status === "running" || status?.status === "paused") && (
-                    <button onClick={stopScan}
-                      className="px-3 py-1.5 rounded-md text-xs font-bold flex items-center gap-1.5"
-                      style={{
-                        background: "var(--accent-red-soft)",
-                        color: "var(--accent-red)",
-                        border: "1px solid var(--accent-red)",
-                        cursor: "pointer",
-                      }}
-                      title="Stop scan permanently">
-                      <Icon name="stop" size={14} /> {isRtl ? "إيقاف" : "Stop"}
-                    </button>
-                  )}
-                  <button onClick={exportReport} disabled={exporting}
-                    className="px-3 py-1.5 rounded-md text-xs font-bold flex items-center gap-1.5"
-                    style={{
-                      background: "var(--bg-tertiary)",
-                      color: "var(--text-primary)",
-                      border: "1px solid var(--border-color)",
-                      cursor: exporting ? "wait" : "pointer",
-                    }}
-                    title="Export report as JSON">
-                    <Icon name="download" size={14} />
-                    {exporting ? "..." : (isRtl ? "تصدير" : "Export")}
-                  </button>
-                </div>
-              )}
             </div>
           </div>
 
@@ -257,66 +166,7 @@ export default function LiveMonitorV2() {
                 color: "var(--accent-yellow)",
               }}
             >
-              {t("liveMonitor.noScans", "No scans yet.")}
-            </div>
-          )}
-
-          {/* Progress + Live findings (ADDED 2026-09-20) */}
-          {scanId && status && (
-            <div className="rounded-xl p-4 space-y-3"
-              style={{
-                background: "var(--bg-secondary)",
-                border: "1px solid var(--border-color)",
-              }}>
-              {/* Progress bar */}
-              <div>
-                <div className="flex justify-between items-center mb-1.5">
-                  <span className="text-xs font-bold" style={{ color: "var(--accent-cyan)" }}>
-                    {isRtl ? "التقدم" : "Progress"}: {status.progress_percent || 0}%
-                  </span>
-                  <span className="text-[10px] font-mono" style={{ color: "var(--text-muted)" }}>
-                    {status.modules_done || 0} / {status.modules_total || "?"} modules
-                    {status.current_module && " · " + status.current_module}
-                  </span>
-                </div>
-                <div className="w-full h-2 rounded-full overflow-hidden"
-                  style={{ background: "var(--bg-tertiary)" }}>
-                  <div
-                    className="h-full transition-all duration-500"
-                    style={{
-                      width: (status.progress_percent || 0) + "%",
-                      background: "linear-gradient(90deg, var(--accent-cyan), var(--accent-green))",
-                    }}
-                  />
-                </div>
-              </div>
-
-              {/* Live findings counters */}
-              <div className="grid grid-cols-5 gap-2">
-                {[
-                  { key: "critical", label: isRtl ? "حرجة" : "Critical", color: "var(--sev-critical)" },
-                  { key: "high",     label: isRtl ? "عالية" : "High",     color: "var(--sev-high)" },
-                  { key: "medium",   label: isRtl ? "متوسطة" : "Medium",  color: "var(--sev-medium)" },
-                  { key: "low",      label: isRtl ? "منخفضة" : "Low",    color: "var(--sev-low)" },
-                  { key: "info",     label: isRtl ? "معلوماتية" : "Info",  color: "var(--sev-info)" },
-                ].map(({ key, label, color }) => {
-                  const count = (status.findings_live || {})[key] || 0
-                  return (
-                    <div key={key} className="rounded-lg p-2 text-center"
-                      style={{
-                        background: count > 0 ? "rgba(255,255,255,0.03)" : "transparent",
-                        border: "1px solid " + (count > 0 ? color : "var(--border-color)"),
-                      }}>
-                      <div className="text-lg font-bold font-mono" style={{ color }}>
-                        {count}
-                      </div>
-                      <div className="text-[9px] uppercase tracking-wider" style={{ color: "var(--text-muted)" }}>
-                        {label}
-                      </div>
-                    </div>
-                  )
-                })}
-              </div>
+              {t("live_monitor_no_scans", "No scans yet. Start a scan from Framework Scan page.")}
             </div>
           )}
 
@@ -356,7 +206,7 @@ export default function LiveMonitorV2() {
               {lines.length === 0 ? (
                 <div style={{ color: "var(--text-muted)" }}>
                   {scanId
-                    ? t("liveMonitor.waiting", "Waiting...")
+                    ? t("waiting_scan", "Waiting for scan output...")
                     : t("no_active_scan", "No active scan")}
                 </div>
               ) : (
@@ -381,7 +231,7 @@ export default function LiveMonitorV2() {
               }}
             >
               <Icon name="stop" size={16} />
-              {t("liveMonitor.stop", "STOP SCAN")}
+              {t("stop_scan_button", "STOP SCAN")}
             </button>
           )}
         </main>
@@ -389,3 +239,9 @@ export default function LiveMonitorV2() {
     </div>
   )
 }
+'''
+
+f.write_text(new_content, encoding="utf-8")
+print("[OK] LiveMonitorV2.jsx rewritten (uses v2 endpoints)")
+print("     Path:", f)
+print("     Size:", len(new_content), "chars")

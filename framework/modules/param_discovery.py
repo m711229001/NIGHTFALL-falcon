@@ -298,6 +298,15 @@ def run(client, config, crawl_result=None):
     # Step 3: Bruteforce wordlist
     # ============================================================
     wordlist = _load_wordlist(config)
+
+    # === Mode-based cap (ADDED 2026-09-20) ===
+    preset = config.get("_mode_preset", {}) or {}
+    max_params = preset.get("param_discovery_max", 150)
+    if max_params and max_params < len(wordlist):
+        wordlist = wordlist[:max_params]
+        log.info(f"  Mode cap: testing {max_params} params (of {len(_load_wordlist(config))})")
+    # === END ===
+
     log.info(f"  Bruteforcing {len(wordlist)} candidate params (chunks of {CHUNK_SIZE})...")
 
     t0 = time.time()

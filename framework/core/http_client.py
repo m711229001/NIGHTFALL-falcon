@@ -1,17 +1,23 @@
-"""Falcon MAG Framework - Unified HTTP Client (Enhanced v2)
+"""Falcon MAG Framework - Unified HTTP Client (v3)
 
-Features:
-  - User-Agent rotation (10 real browser UAs)
+Features (all consolidated):
+  - User-Agent rotation (10 real browsers)
   - Smart exponential backoff (503/429)
-  - Adaptive rate limiting (auto-slow on blocking)
-  - Circuit breaker (stops if target blocks)
-  - Clear blocking detection + reporting
+  - Circuit breaker (blocking + unreachable)
+  - Timeout tracking
+  - Preflight connectivity check
+  - Auth: cookies, bearer, basic, custom headers
+  - Session verification
+  - Scope + exclude filters
+  - Static resource skip helper
 """
 import warnings
 import urllib3
 import random
 import time
 import threading
+import socket
+from urllib.parse import urlparse
 
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 warnings.filterwarnings("ignore", category=UserWarning)
@@ -27,32 +33,24 @@ log = get_logger("http")
 
 
 # ============================================================
-# User-Agent pool (real browsers, updated 2025)
+# User-Agent pool
 # ============================================================
 USER_AGENTS = [
-    # Chrome (Windows)
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36",
-    # Chrome (macOS)
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
-    # Firefox
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:133.0) Gecko/20100101 Firefox/133.0",
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:133.0) Gecko/20100101 Firefox/133.0",
-    # Safari
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.1 Safari/605.1.15",
-    # Edge
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36 Edg/131.0.0.0",
-    # Chrome (Linux)
     "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
-    # Firefox (Linux)
     "Mozilla/5.0 (X11; Ubuntu; Linux x86_64; rv:133.0) Gecko/20100101 Firefox/133.0",
-    # Mobile Chrome (Android)
     "Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Mobile Safari/537.36",
 ]
 
 
 # ============================================================
-# Static resource detection (ADDED 2026-09-20)
+# Static resource detection
 # ============================================================
 STATIC_EXTENSIONS = {
     ".css", ".js", ".mjs", ".map", ".ico", ".png", ".jpg", ".jpeg",
@@ -77,24 +75,20 @@ STATIC_EXACT_FILES = {
 
 
 def is_static_resource(url: str) -> bool:
-    """Check if a URL points to a static resource (should not be fuzzed)."""
+    """Check if URL points to a static resource."""
     try:
-        from urllib.parse import urlparse
         p = urlparse(url)
         path = (p.path or "/").lower()
         filename = path.rsplit("/", 1)[-1]
 
-        # Exact known files
         if filename in STATIC_EXACT_FILES:
             return True
 
-        # Extension check (last dot)
         if "." in filename:
             ext = "." + filename.rsplit(".", 1)[-1]
             if ext in STATIC_EXTENSIONS:
                 return True
 
-        # Path prefix check
         for prefix in STATIC_PATH_PREFIXES:
             if prefix in path:
                 return True
@@ -105,21 +99,14 @@ def is_static_resource(url: str) -> bool:
 
 
 def is_testable_url(url: str) -> bool:
-    """URL is safe to inject payloads into."""
     return not is_static_resource(url)
 
 
-
-
+# ============================================================
+# Preflight
+# ============================================================
 def preflight_check(target: str, timeout: int = 5) -> tuple:
-    """Quick connectivity check BEFORE full scan.
-
-    Returns (ok: bool, reason: str).
-    Saves 6+ minutes on unreachable targets.
-    """
-    import socket
-    from urllib.parse import urlparse
-
+    """Quick connectivity check. Returns (ok, reason)."""
     p = urlparse(target)
     host = p.hostname
     port = p.port or (443 if p.scheme == "https" else 80)
@@ -127,7 +114,6 @@ def preflight_check(target: str, timeout: int = 5) -> tuple:
     if not host:
         return False, "invalid URL"
 
-    # 1) DNS + TCP check
     try:
         sock = socket.create_connection((host, port), timeout=timeout)
         sock.close()
@@ -136,21 +122,19 @@ def preflight_check(target: str, timeout: int = 5) -> tuple:
     except socket.gaierror:
         return False, f"DNS resolution failed for {host}"
     except Exception as e:
-        return False, f"connect failed: {e}"
+        return False, f"connect failed: {str(e)[:60]}"
 
-    # 2) Quick HTTP HEAD/GET
     try:
-        import requests
         r = requests.head(target, timeout=timeout, verify=False, allow_redirects=True)
-        # Any status < 600 is fine — we can reach it
         return True, f"HTTP {r.status_code}"
     except Exception:
-        # HEAD may fail but TCP succeeded — still reachable
         return True, "TCP ok"
 
 
+# ============================================================
+# HTTPResponse
+# ============================================================
 class HTTPResponse:
-    """Normalized HTTP response."""
     __slots__ = ("url", "status", "headers", "text", "content",
                  "elapsed_ms", "error", "redirects", "blocked")
 
@@ -181,18 +165,20 @@ class HTTPResponse:
         return f"<HTTPResponse {self.status} {self.url[:60]}>"
 
 
+# ============================================================
+# HTTPClient
+# ============================================================
 class HTTPClient:
-    """Enhanced HTTP client with UA rotation, smart backoff, and circuit breaker."""
+    MAX_CONSECUTIVE_BLOCKS = 5
+    MAX_TOTAL_BLOCKS = 15
+    MAX_CONSECUTIVE_TIMEOUTS = 3
+    MAX_TOTAL_TIMEOUTS = 10
 
-    # Circuit breaker thresholds
-    MAX_CONSECUTIVE_BLOCKS = 5       # stop after 5 consecutive 503s
-    MAX_TOTAL_BLOCKS = 15            # or 15 total in session
-
-    def __init__(self, config: dict):
+    def __init__(self, config: dict, **http_kwargs):
         self.config = config
         scan_cfg = config.get("scan", {})
 
-        # Adaptive rate limiter
+        # --- Rate limiter ---
         base_rate = scan_cfg.get("rate_limit", 20)
         self.rate_limiter = RateLimiter(
             rate_per_sec=base_rate,
@@ -201,10 +187,10 @@ class HTTPClient:
         self._base_rate = base_rate
         self._current_rate = base_rate
 
-        # Session
+        # --- Session ---
         self.session = requests.Session()
 
-        # User-Agent: use configured or random from pool
+        # --- User-Agent ---
         ua = scan_cfg.get("user_agent", "").strip()
         if ua and ua != "FalconMAG/1.0":
             self._default_ua = ua
@@ -215,15 +201,23 @@ class HTTPClient:
 
         headers = {"User-Agent": self._default_ua}
         headers.update(config.get("headers", {}))
+        # Extra headers from CLI
+        if http_kwargs.get("extra_headers"):
+            headers.update(http_kwargs["extra_headers"])
         self.session.headers.update(headers)
         self.session.verify = scan_cfg.get("verify_ssl", False)
 
-        # Proxy
+        # --- Auth (cookies, bearer, basic) ---
+        self._apply_auth(config)
+        self._auth_verified = False
+        self._auth_reason = ""
+
+        # --- Proxy ---
         proxy = scan_cfg.get("proxy")
         if proxy:
             self.session.proxies = {"http": proxy, "https": proxy}
 
-        # Retry adapter (for connection errors only, not 503)
+        # --- Retry adapter ---
         retries = scan_cfg.get("retries", 1)
         retry = Retry(
             total=retries,
@@ -235,45 +229,102 @@ class HTTPClient:
         self.session.mount("http://", adapter)
         self.session.mount("https://", adapter)
 
+        # --- History ---
         self.history: list = []
 
-        # Blocking tracking
+        # --- Blocking tracking ---
         self._lock = threading.Lock()
         self._consecutive_blocks = 0
         self._total_blocks = 0
         self._circuit_open = False
         self._last_503_time = 0
         self._backoff_until = 0
-        self._backoff_level = 0          # 0, 1, 2, 3 → 0s, 5s, 15s, 45s
+        self._backoff_level = 0
 
-        # Timeout tracking (ADDED 2026-09-20)
+        # --- Timeout tracking ---
         self._consecutive_timeouts = 0
         self._total_timeouts = 0
         self._host_unreachable = False
-        self.MAX_CONSECUTIVE_TIMEOUTS = 3
-        self.MAX_TOTAL_TIMEOUTS = 10
+
+    # ----------------------------------------------------------
+    # Auth
+    # ----------------------------------------------------------
+    def _apply_auth(self, config: dict):
+        """Apply cookies, bearer token, and basic auth."""
+        # 1) Cookie string
+        cookie_str = config.get("_manual_cookie") or config.get("manual_cookie")
+        if cookie_str:
+            try:
+                count = 0
+                for pair in cookie_str.split(";"):
+                    pair = pair.strip()
+                    if "=" in pair:
+                        k, v = pair.split("=", 1)
+                        self.session.cookies.set(k.strip(), v.strip())
+                        count += 1
+                log.info(f"[auth] Loaded {count} cookies")
+            except Exception as e:
+                log.warning(f"[auth] Cookie parse failed: {e}")
+
+        # 2) Bearer token
+        bearer = config.get("_bearer_token") or config.get("bearer_token")
+        if bearer:
+            self.session.headers["Authorization"] = f"Bearer {bearer}"
+            log.info("[auth] Bearer token applied")
+
+        # 3) Basic auth
+        username = config.get("_auth_username")
+        password = config.get("_auth_password")
+        if username and password:
+            self.session.auth = (username, password)
+            log.info("[auth] Basic auth applied")
+
+        # 4) Custom auth headers
+        auth_headers = config.get("_auth_headers") or {}
+        if isinstance(auth_headers, dict):
+            for k, v in auth_headers.items():
+                self.session.headers[k] = v
+
+    def verify_auth(self, target: str) -> tuple:
+        """Check that auth is working (not redirected to login)."""
+        has_cookies = len(self.session.cookies) > 0
+        has_bearer = "Authorization" in self.session.headers
+
+        if not has_cookies and not has_bearer:
+            return False, "no auth configured"
+
+        try:
+            r = self.session.get(target, timeout=8, verify=False, allow_redirects=True)
+            status = r.status_code
+            final_url = str(r.url).lower()
+
+            login_hints = ("/login", "/signin", "/auth/", "/sso", "/account/login")
+            if any(h in final_url for h in login_hints):
+                return False, f"redirected to login"
+
+            if status in (200, 201, 202, 204):
+                return True, f"HTTP {status}"
+
+            return False, f"HTTP {status}"
+        except Exception as e:
+            return False, str(e)[:80]
 
     # ----------------------------------------------------------
     # Helpers
     # ----------------------------------------------------------
     def _rotate_user_agent(self):
-        """Rotate UA for next request (only if not pinned by config)."""
         if not self._rotate_ua:
             return
-        ua = random.choice(USER_AGENTS)
-        self.session.headers["User-Agent"] = ua
+        self.session.headers["User-Agent"] = random.choice(USER_AGENTS)
 
     def _is_blocking_status(self, status: int) -> bool:
-        """503/429/403-frequent → blocking signals."""
         return status in (429, 503)
 
     def _handle_block(self):
-        """Called when a 503/429 is detected."""
         with self._lock:
             self._consecutive_blocks += 1
             self._total_blocks += 1
 
-            # Circuit breaker
             if (self._consecutive_blocks >= self.MAX_CONSECUTIVE_BLOCKS or
                     self._total_blocks >= self.MAX_TOTAL_BLOCKS):
                 if not self._circuit_open:
@@ -284,7 +335,6 @@ class HTTPClient:
                     )
                 return
 
-            # Exponential backoff: 5s → 15s → 45s → 60s
             backoff_map = {1: 5, 2: 15, 3: 45}
             backoff = backoff_map.get(self._consecutive_blocks, 60)
             self._backoff_until = time.time() + backoff
@@ -296,7 +346,6 @@ class HTTPClient:
             )
 
     def _handle_success(self):
-        """Reset block counters on success."""
         with self._lock:
             if self._consecutive_blocks > 0:
                 self._consecutive_blocks = 0
@@ -305,20 +354,38 @@ class HTTPClient:
                 log.info("[+] Target responding again — resuming normal rate")
 
     def _wait_backoff(self):
-        """Wait if we're in a backoff period."""
         wait = self._backoff_until - time.time()
         if wait > 0:
             log.debug(f"  ... waiting backoff {wait:.1f}s")
             time.sleep(wait)
 
+    def _handle_timeout(self):
+        with self._lock:
+            self._consecutive_timeouts += 1
+            self._total_timeouts += 1
+            ct = self._consecutive_timeouts
+
+            if (ct >= self.MAX_CONSECUTIVE_TIMEOUTS or
+                    self._total_timeouts >= self.MAX_TOTAL_TIMEOUTS):
+                if not self._host_unreachable:
+                    self._host_unreachable = True
+                    log.warning(f"[!] TARGET UNREACHABLE — {ct} consecutive timeouts. Aborting.")
+            else:
+                log.warning(f"  [timeout] {ct}/{self.MAX_CONSECUTIVE_TIMEOUTS}")
+
+    def _reset_timeouts(self):
+        with self._lock:
+            self._consecutive_timeouts = 0
+
+    # ----------------------------------------------------------
+    # Properties
+    # ----------------------------------------------------------
     @property
     def is_blocked(self) -> bool:
-        """Has the target blocked us (circuit open)?"""
         return self._circuit_open
 
     @property
     def is_unreachable(self) -> bool:
-        """Is the target unreachable (timeouts)?"""
         return self._host_unreachable
 
     @property
@@ -327,27 +394,25 @@ class HTTPClient:
             "total_blocks": self._total_blocks,
             "consecutive_blocks": self._consecutive_blocks,
             "circuit_open": self._circuit_open,
+            "total_timeouts": self._total_timeouts,
+            "host_unreachable": self._host_unreachable,
         }
 
     # ----------------------------------------------------------
     # Core request
     # ----------------------------------------------------------
     def request(self, method: str, url: str, **kwargs) -> Optional[HTTPResponse]:
-        """Send request with UA rotation, backoff, and circuit breaker."""
-
-        # Circuit breaker (blocking)
+        # Circuit breaker
         if self._circuit_open:
             return HTTPResponse(
                 url=url, status=0, headers={}, text="", content=b"",
-                error="Circuit breaker open: target blocking requests",
+                error="Circuit breaker open: target blocking",
                 blocked=True,
             )
-
-        # Circuit breaker (unreachable)
         if self._host_unreachable:
             return HTTPResponse(
                 url=url, status=0, headers={}, text="", content=b"",
-                error="Target unreachable — aborting",
+                error="Target unreachable",
                 blocked=True,
             )
 
@@ -362,10 +427,10 @@ class HTTPClient:
             log.debug(f"Skipped (out of scope): {url}")
             return None
 
-        # Wait for backoff if active
+        # Backoff
         self._wait_backoff()
 
-        # Rotate UA (every request)
+        # UA rotation
         self._rotate_user_agent()
 
         # Rate limit
@@ -379,23 +444,18 @@ class HTTPClient:
             resp = self.session.request(method, url, **kwargs)
 
             entry = {
-                "method": method,
-                "url": url,
+                "method": method, "url": url,
                 "status": resp.status_code,
                 "size": len(resp.content),
                 "time": round(resp.elapsed.total_seconds(), 3),
             }
             self.history.append(entry)
 
-            # Detect blocking
             blocked = self._is_blocking_status(resp.status_code)
-
             if blocked:
                 self._handle_block()
             else:
-                # Reset timeout counters on any successful response
-                with self._lock:
-                    self._consecutive_timeouts = 0
+                self._reset_timeouts()
                 self._handle_success()
 
             return HTTPResponse(
@@ -413,105 +473,53 @@ class HTTPClient:
             err_str = str(e)
             err_lower = err_str.lower()
 
-            # Detect timeout
-            is_timeout = (
-                "timeout" in err_lower or
-                "timed out" in err_lower or
-                "read timed out" in err_lower or
-                "connect timeout" in err_lower
-            )
-
+            is_timeout = ("timeout" in err_lower or "timed out" in err_lower)
             if is_timeout:
-                with self._lock:
-                    self._consecutive_timeouts += 1
-                    self._total_timeouts += 1
-                    ct = self._consecutive_timeouts
-                    tt = self._total_timeouts
-
-                # Fast-fail: 3 consecutive timeouts → unreachable
-                if (ct >= self.MAX_CONSECUTIVE_TIMEOUTS or
-                        tt >= self.MAX_TOTAL_TIMEOUTS):
-                    if not self._host_unreachable:
-                        self._host_unreachable = True
-                        log.warning(
-                            f"[!] TARGET UNREACHABLE — {ct} consecutive timeouts. "
-                            f"Aborting all further requests."
-                        )
-                else:
-                    log.warning(f"  [timeout] {ct}/{self.MAX_CONSECUTIVE_TIMEOUTS} — {url[:60]}")
+                self._handle_timeout()
+                log.debug(f"Request timeout: {method} {url}")
             elif "too many 503" in err_str or "503" in err_str:
                 self._handle_block()
-                log.debug(f"Request failed (503): {method} {url}")
+                log.debug(f"Request 503: {method} {url}")
             else:
-                log.debug(f"Request failed: {method} {url} -> {e[:100]}")
+                log.debug(f"Request failed: {method} {url} -> {err_str[:100]}")
 
             self.history.append({
                 "method": method, "url": url,
                 "status": "ERROR", "error": err_str,
             })
-
             return HTTPResponse(
                 url=url, status=0, headers={}, text="", content=b"",
-                error=err_str,
-                blocked=("503" in err_str),
+                error=err_str, blocked=("503" in err_str),
             )
 
     # ----------------------------------------------------------
-    # Convenience methods
+    # Convenience + aliases
     # ----------------------------------------------------------
-    def get(self, url: str, **kw) -> Optional[HTTPResponse]:
-        return self.request("GET", url, **kw)
+    def get(self, url, **kw):     return self.request("GET", url, **kw)
+    def post(self, url, **kw):    return self.request("POST", url, **kw)
+    def put(self, url, **kw):     return self.request("PUT", url, **kw)
+    def delete(self, url, **kw):  return self.request("DELETE", url, **kw)
+    def head(self, url, **kw):    return self.request("HEAD", url, **kw)
+    def options(self, url, **kw): return self.request("OPTIONS", url, **kw)
 
-    def post(self, url: str, **kw) -> Optional[HTTPResponse]:
-        return self.request("POST", url, **kw)
-
-    def put(self, url: str, **kw) -> Optional[HTTPResponse]:
-        return self.request("PUT", url, **kw)
-
-    def delete(self, url: str, **kw) -> Optional[HTTPResponse]:
-        return self.request("DELETE", url, **kw)
-
-    def head(self, url: str, **kw) -> Optional[HTTPResponse]:
-        return self.request("HEAD", url, **kw)
-
-    def options(self, url: str, **kw) -> Optional[HTTPResponse]:
-        return self.request("OPTIONS", url, **kw)
-
-    # ----------------------------------------------------------
-    # Aliases (for backward compat with modules)
-    # ----------------------------------------------------------
-    def scan_request(self, url: str, method: str = "GET", **kw):
-        """Alias: scan_request(url, method='GET') -> HTTPResponse"""
+    # Aliases for backward compat with modules
+    def scan_request(self, url, method="GET", **kw):
         return self.request(method, url, **kw)
-
-    def scan_get(self, url: str, **kw):
-        return self.get(url, **kw)
-
-    def scan_post(self, url: str, **kw):
-        return self.post(url, **kw)
-
-    def scan_put(self, url: str, **kw):
-        return self.put(url, **kw)
-
-    def scan_delete(self, url: str, **kw):
-        return self.delete(url, **kw)
-
-    def scan_options(self, url: str, **kw):
-        return self.options(url, **kw)
-
-    def scan_head(self, url: str, **kw):
-        return self.head(url, **kw)
+    def scan_get(self, url, **kw):    return self.get(url, **kw)
+    def scan_post(self, url, **kw):   return self.post(url, **kw)
+    def scan_put(self, url, **kw):    return self.put(url, **kw)
+    def scan_delete(self, url, **kw): return self.delete(url, **kw)
+    def scan_options(self, url, **kw): return self.options(url, **kw)
+    def scan_head(self, url, **kw):   return self.head(url, **kw)
 
     # ----------------------------------------------------------
-    # Scope check
+    # Scope
     # ----------------------------------------------------------
     def in_scope(self, url: str) -> bool:
-        """Check if URL is in scope (allow all if no scope defined)."""
         scope = self.config.get("scope", [])
         if not scope:
             return True
         try:
-            from urllib.parse import urlparse
             host = urlparse(url).hostname or ""
             for s in scope:
                 if s and (s == host or host.endswith("." + s.lstrip("*."))):

@@ -313,5 +313,11 @@
     "findings": "Findings",
     "reports": "Reports",
     "profiles": "Profiles"
+  },
+  "links": {
+    "title": "Discovered Links",
+    "noLinks": "No links",
+    "search": "Search...",
+    "copied": "Copied"
   }
 }

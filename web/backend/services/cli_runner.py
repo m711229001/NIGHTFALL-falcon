@@ -296,14 +296,65 @@ def _flatten_findings(result: dict, target: str) -> List[dict]:
     return normalized
 
 
+def _load_latest_result_for_state(state: "ScanState") -> Optional[dict]:
+    """Find the most recent scan_*.json matching this scan's started_at."""
+    import glob
+    try:
+        from datetime import datetime as _dt
+        files = sorted(
+            glob.glob(str(OUTPUT_DIR / "scan_*.json")),
+            key=os.path.getmtime,
+            reverse=True,
+        )
+        started = None
+        if state.started_at:
+            try:
+                started = _dt.fromisoformat(state.started_at.replace("Z", "+00:00"))
+            except Exception:
+                pass
+
+        for jf in files[:10]:
+            try:
+                with open(jf, encoding="utf-8") as fh:
+                    candidate = json.load(fh)
+            except Exception:
+                continue
+
+            if started and candidate.get("scan_date"):
+                try:
+                    cd = _dt.fromisoformat(candidate["scan_date"].replace("Z", "+00:00"))
+                    if abs((cd - started).total_seconds()) <= 300:
+                        return candidate
+                except Exception:
+                    pass
+            else:
+                return candidate
+        if files:
+            with open(files[0], encoding="utf-8") as fh:
+                return json.load(fh)
+    except Exception as e:
+        print(f"[cli_runner] _load_latest_result failed: {e}", flush=True)
+    return None
+
+
 def _save_to_falcon_db(state: "ScanState") -> Optional[int]:
     """Insert a completed Framework scan + findings into falcon.db.
 
     Returns: scan_id (DB row id) or None on failure.
     Best-effort: never raises.
     """
-    if state.status != "done" or not state.result:
+    if state.status != "done":
         return None
+
+    # Get result - prefer state.result; fallback to latest JSON file
+    result = state.result
+    if not result:
+        result = _load_latest_result_for_state(state)
+    if not result:
+        print("[cli_runner] no result for falcon.db persist", flush=True)
+        return None
+
+    state.result = result
 
     db_path = _falcon_db_path()
     if not db_path:

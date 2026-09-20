@@ -6,6 +6,7 @@ import { useParams, useNavigate } from "react-router-dom"
 import { useTranslation } from "react-i18next"
 import TacticalSidebar from "../components/TacticalSidebar"
 import TopHeader from "../components/TopHeader"
+import VulnDetailDrawer from "../components/VulnDetailDrawer"
 import client from "../../api/client"
 
 const SEV_COLORS = {
@@ -22,6 +23,7 @@ export default function ScanDetailsV2() {
   const { t } = useTranslation()
   const [data, setData] = useState(null)
   const [loading, setLoading] = useState(true)
+  const [selectedFinding, setSelectedFinding] = useState(null)
 
   useEffect(() => {
     client.get(`/api/scans/${id}`)
@@ -163,7 +165,7 @@ export default function ScanDetailsV2() {
                       const sev = (f.severity || "info").toLowerCase()
                       const color = SEV_COLORS[sev] || SEV_COLORS.info
                       return (
-                        <tr key={i} style={{ borderTop: "1px solid var(--border-color)" }}>
+                        <tr key={i} onClick={() => setSelectedFinding(f)} style={{ borderTop: "1px solid var(--border-color)", cursor: "pointer" }}>
                           <td className="py-2">
                             <span className="px-2 py-0.5 rounded text-[10px] font-bold uppercase"
                               style={{ color, border: `1px solid ${color}`, background: `${color}20` }}>
@@ -182,6 +184,12 @@ export default function ScanDetailsV2() {
           </div>
         </main>
       </div>
+      {selectedFinding && (
+        <VulnDetailDrawer
+          finding={selectedFinding}
+          onClose={() => setSelectedFinding(null)}
+        />
+      )}
     </div>
   )
 }

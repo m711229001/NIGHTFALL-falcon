@@ -541,6 +541,25 @@ export default function VulnDetailDrawer({ finding, onClose }) {
   }, [onClose])
 
   useEffect(() => {
+    // Priority 1: AI fields present directly on finding (from JSON scans)
+    if (finding?.ai_explanation_ar || finding?.ai_poc_code || finding?.ai_cvss_score) {
+      setAiAnalysis({
+        cvss_score: finding.ai_cvss_score || 0,
+        cvss_vector: finding.ai_cvss_vector || "",
+        severity: finding.ai_severity || finding.severity || "info",
+        priority: finding.ai_priority !== undefined ? finding.ai_priority : 99,
+        explanation_ar: finding.ai_explanation_ar || "",
+        attack_walkthrough_ar: finding.ai_attack_walkthrough_ar || "",
+        poc_code: finding.ai_poc_code || "",
+        poc_language: finding.ai_poc_language || "python",
+        poc_url: finding.ai_poc_url || "",
+        remediation_ar: finding.ai_remediation_ar || "",
+        remediation_code: finding.ai_remediation_code || "",
+        references: finding.ai_references || [],
+      })
+      return
+    }
+    // Priority 2: fetch from backend by scan_id (DB-based findings)
     if (!finding?.id || !finding?.scan_id) return
     setAiLoading(true)
     const token = localStorage.getItem("token")
@@ -555,7 +574,7 @@ export default function VulnDetailDrawer({ finding, onClose }) {
       })
       .catch(() => {})
       .finally(() => setAiLoading(false))
-  }, [finding?.id, finding?.scan_id])
+  }, [finding?.id, finding?.scan_id, finding?.ai_explanation_ar, finding?.ai_poc_code, finding?.ai_cvss_score])
 
   if (!finding) return null
 

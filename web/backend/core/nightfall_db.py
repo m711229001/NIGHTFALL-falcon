@@ -88,9 +88,24 @@ def get_findings(limit: int = 200, severity: Optional[str] = None, vuln_class: O
         params.append(limit)
         cur = conn.cursor()
         cur.execute(q, params)
-        return [dict(r) for r in cur.fetchall()]
+        return [_expand_ai(dict(r)) for r in cur.fetchall()]
     finally:
         conn.close()
+
+
+def _expand_ai(row: dict) -> dict:
+    """If row has ai_data JSON, expand it into top-level keys."""
+    import json as _json
+    raw = row.pop("ai_data", None)
+    if raw:
+        try:
+            ai = _json.loads(raw) if isinstance(raw, str) else raw
+            if isinstance(ai, dict):
+                for k, v in ai.items():
+                    row[k] = v
+        except Exception:
+            pass
+    return row
 
 
 def get_finding_by_id(finding_id: int):
@@ -101,7 +116,7 @@ def get_finding_by_id(finding_id: int):
         cur = conn.cursor()
         cur.execute("SELECT * FROM findings WHERE id = ?", (finding_id,))
         row = cur.fetchone()
-        return dict(row) if row else None
+        return _expand_ai(dict(row)) if row else None
     finally:
         conn.close()
 

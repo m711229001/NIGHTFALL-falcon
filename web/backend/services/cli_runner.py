@@ -270,6 +270,18 @@ def _flatten_findings(result: dict, target: str) -> List[dict]:
     # 3) Normalize each finding to falcon.db findings schema
     normalized: List[dict] = []
     for f in out:
+        # Collect AI fields (if present) into a single JSON blob
+        ai_blob = {}
+        for k in ("ai_cvss_score", "ai_cvss_vector", "ai_severity", "ai_priority",
+                  "ai_explanation_ar", "ai_attack_walkthrough_ar",
+                  "ai_poc_code", "ai_poc_language", "ai_poc_url",
+                  "ai_remediation_ar", "ai_remediation_code", "ai_references"):
+            v = f.get(k)
+            if v not in (None, "", [], 0):
+                ai_blob[k] = v
+        if f.get("ai_analyzed"):
+            ai_blob["ai_analyzed"] = True
+
         normalized.append({
             "vuln_class": (f.get("vuln_class") or f.get("category") or f.get("class") or "unknown"),
             "subtype":    (f.get("subtype") or f.get("title") or f.get("type") or ""),
@@ -279,6 +291,7 @@ def _flatten_findings(result: dict, target: str) -> List[dict]:
             "payload":    (f.get("payload") or ""),
             "evidence":   (f.get("evidence") or f.get("description") or ""),
             "confidence": float(f.get("confidence") or 0.8),
+            "ai_data":    (json.dumps(ai_blob, ensure_ascii=False) if ai_blob else None),
         })
     return normalized
 
@@ -351,8 +364,8 @@ def _save_to_falcon_db(state: "ScanState") -> Optional[int]:
                 """
                 INSERT INTO findings
                   (scan_id, vuln_class, subtype, severity, url, param,
-                   payload, evidence, confidence, created_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                   payload, evidence, confidence, created_at, ai_data)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     db_scan_id,
@@ -365,6 +378,7 @@ def _save_to_falcon_db(state: "ScanState") -> Optional[int]:
                     f["evidence"],
                     f["confidence"],
                     now,
+                    f.get("ai_data"),
                 ),
             )
 

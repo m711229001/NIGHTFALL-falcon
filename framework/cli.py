@@ -150,12 +150,13 @@ MODULE_REGISTRY = {
 # ============================================================
 # Bridge: feeders run first, sequentially, before scanners
 # ============================================================
-FEEDER_MODULES = ["crawler", "playwright_crawler", "js_analyzer", "param_discovery"]
+FEEDER_MODULES = ["crawler", "playwright_crawler", "js_analyzer", "js_endpoints", "param_discovery"]
 
 FEEDER_KEYS = {
     "crawler":            "_crawl_result",
     "playwright_crawler": "_crawl_result",
     "js_analyzer":        "_js_analyzer",
+    "js_endpoints":       "_js_endpoints",
     "param_discovery":    "_param_discovery",
 }
 

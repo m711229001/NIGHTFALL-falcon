@@ -226,6 +226,43 @@ def run(client, config, crawl_result=None):
         log.warning("  Cannot reach target")
         return result
 
+    # === ADDED: gather targets from js_endpoints ===
+    discovered_endpoints = config.get("_discovered_endpoints", []) or []
+    endpoints_to_test = [target]
+    if discovered_endpoints:
+        # Add top 10 unique endpoints (avoid explosion)
+        for ep in discovered_endpoints[:10]:
+            if ep not in endpoints_to_test:
+                endpoints_to_test.append(ep)
+        log.info(f"  Testing {len(endpoints_to_test)} endpoint(s) from discovery")
+
+    # If we have multiple endpoints, test each
+    all_discovered = set()
+    for ep_url in endpoints_to_test:
+        # Skip static
+        if is_static_resource(ep_url):
+            continue
+        # Skip if same as target (already tested below)
+        if ep_url == target:
+            continue
+
+        log.debug(f"  Discovering params on: {ep_url}")
+        try:
+            ep_baseline = client.scan_request(ep_url)
+            if not ep_baseline or ep_baseline.status == 0:
+                continue
+            wordlist = _load_wordlist(config)
+            hits = _chunked_bruteforce(client, ep_url, wordlist, ep_baseline, quiet=True)
+            for h in hits:
+                all_discovered.add(h)
+        except Exception as e:
+            log.debug(f"    endpoint failed: {e}")
+
+    # Merge endpoint-discovered params into from_bruteforce later
+    # (they'll be added to from_bruteforce below)
+    _pre_discovered = list(all_discovered)
+    # === END ===
+
     # ============================================================
     # Step 2: Extract from HTML
     # ============================================================
@@ -272,8 +309,18 @@ def run(client, config, crawl_result=None):
     log.info(f"  Bruteforce done in {elapsed:.1f}s — {len(brute_params)} params found")
 
     # ============================================================
-    # Step 4: Combine
+    # Step 4: Combine (target + endpoint-discovered)
     # ============================================================
+    # Merge pre-discovered from endpoints
+    try:
+        for p in _pre_discovered:
+            if p not in brute_params:
+                brute_params.append(p)
+        if _pre_discovered:
+            log.info(f"  + {len(_pre_discovered)} params from discovered endpoints")
+    except NameError:
+        pass
+
     all_params = sorted(set(result["from_html"]) | set(brute_params))
     result["discovered_params"] = all_params
 

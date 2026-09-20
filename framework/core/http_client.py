@@ -109,6 +109,46 @@ def is_testable_url(url: str) -> bool:
     return not is_static_resource(url)
 
 
+
+
+def preflight_check(target: str, timeout: int = 5) -> tuple:
+    """Quick connectivity check BEFORE full scan.
+
+    Returns (ok: bool, reason: str).
+    Saves 6+ minutes on unreachable targets.
+    """
+    import socket
+    from urllib.parse import urlparse
+
+    p = urlparse(target)
+    host = p.hostname
+    port = p.port or (443 if p.scheme == "https" else 80)
+
+    if not host:
+        return False, "invalid URL"
+
+    # 1) DNS + TCP check
+    try:
+        sock = socket.create_connection((host, port), timeout=timeout)
+        sock.close()
+    except socket.timeout:
+        return False, f"TCP connect timeout ({host}:{port})"
+    except socket.gaierror:
+        return False, f"DNS resolution failed for {host}"
+    except Exception as e:
+        return False, f"connect failed: {e}"
+
+    # 2) Quick HTTP HEAD/GET
+    try:
+        import requests
+        r = requests.head(target, timeout=timeout, verify=False, allow_redirects=True)
+        # Any status < 600 is fine — we can reach it
+        return True, f"HTTP {r.status_code}"
+    except Exception:
+        # HEAD may fail but TCP succeeded — still reachable
+        return True, "TCP ok"
+
+
 class HTTPResponse:
     """Normalized HTTP response."""
     __slots__ = ("url", "status", "headers", "text", "content",
@@ -206,6 +246,13 @@ class HTTPClient:
         self._backoff_until = 0
         self._backoff_level = 0          # 0, 1, 2, 3 → 0s, 5s, 15s, 45s
 
+        # Timeout tracking (ADDED 2026-09-20)
+        self._consecutive_timeouts = 0
+        self._total_timeouts = 0
+        self._host_unreachable = False
+        self.MAX_CONSECUTIVE_TIMEOUTS = 3
+        self.MAX_TOTAL_TIMEOUTS = 10
+
     # ----------------------------------------------------------
     # Helpers
     # ----------------------------------------------------------
@@ -270,6 +317,11 @@ class HTTPClient:
         return self._circuit_open
 
     @property
+    def is_unreachable(self) -> bool:
+        """Is the target unreachable (timeouts)?"""
+        return self._host_unreachable
+
+    @property
     def block_summary(self) -> dict:
         return {
             "total_blocks": self._total_blocks,
@@ -283,11 +335,19 @@ class HTTPClient:
     def request(self, method: str, url: str, **kwargs) -> Optional[HTTPResponse]:
         """Send request with UA rotation, backoff, and circuit breaker."""
 
-        # Circuit breaker
+        # Circuit breaker (blocking)
         if self._circuit_open:
             return HTTPResponse(
                 url=url, status=0, headers={}, text="", content=b"",
                 error="Circuit breaker open: target blocking requests",
+                blocked=True,
+            )
+
+        # Circuit breaker (unreachable)
+        if self._host_unreachable:
+            return HTTPResponse(
+                url=url, status=0, headers={}, text="", content=b"",
+                error="Target unreachable — aborting",
                 blocked=True,
             )
 
@@ -333,6 +393,9 @@ class HTTPClient:
             if blocked:
                 self._handle_block()
             else:
+                # Reset timeout counters on any successful response
+                with self._lock:
+                    self._consecutive_timeouts = 0
                 self._handle_success()
 
             return HTTPResponse(
@@ -348,13 +411,39 @@ class HTTPClient:
 
         except requests.RequestException as e:
             err_str = str(e)
+            err_lower = err_str.lower()
 
-            # Detect 503 in exception message
-            if "too many 503" in err_str or "503" in err_str:
+            # Detect timeout
+            is_timeout = (
+                "timeout" in err_lower or
+                "timed out" in err_lower or
+                "read timed out" in err_lower or
+                "connect timeout" in err_lower
+            )
+
+            if is_timeout:
+                with self._lock:
+                    self._consecutive_timeouts += 1
+                    self._total_timeouts += 1
+                    ct = self._consecutive_timeouts
+                    tt = self._total_timeouts
+
+                # Fast-fail: 3 consecutive timeouts → unreachable
+                if (ct >= self.MAX_CONSECUTIVE_TIMEOUTS or
+                        tt >= self.MAX_TOTAL_TIMEOUTS):
+                    if not self._host_unreachable:
+                        self._host_unreachable = True
+                        log.warning(
+                            f"[!] TARGET UNREACHABLE — {ct} consecutive timeouts. "
+                            f"Aborting all further requests."
+                        )
+                else:
+                    log.warning(f"  [timeout] {ct}/{self.MAX_CONSECUTIVE_TIMEOUTS} — {url[:60]}")
+            elif "too many 503" in err_str or "503" in err_str:
                 self._handle_block()
                 log.debug(f"Request failed (503): {method} {url}")
             else:
-                log.debug(f"Request failed: {method} {url} -> {e}")
+                log.debug(f"Request failed: {method} {url} -> {e[:100]}")
 
             self.history.append({
                 "method": method, "url": url,

@@ -29,7 +29,7 @@ from core.config import (  # noqa: E402
     load_config, apply_target, apply_modules,
     enable_all_modules, get_enabled_modules,
 )
-from core.http_client import HTTPClient  # noqa: E402
+from core.http_client import HTTPClient, preflight_check  # noqa: E402
 from core.report import generate_reports  # noqa: E402
 from core.logger import get_logger  # noqa: E402
 
@@ -353,6 +353,26 @@ def _run_scan(target: str, module_names: list, config_path: str = None,
         config.setdefault("scan", {})["verify_ssl"] = False
 
     apply_target(config, target)
+
+    # === Preflight: fast-fail on unreachable targets ===
+    if not quiet:
+        log.info("[preflight] Checking connectivity...")
+    ok, reason = preflight_check(target, timeout=6)
+    if not ok:
+        log.error(f"[preflight] Target unreachable: {reason}")
+        if not quiet:
+            console.print(f"[red]✗ Target unreachable: {reason}[/red]")
+            console.print(f"[yellow]  Aborting scan to save time.[/yellow]")
+        return {
+            "target": target,
+            "scan_date": datetime.now(timezone.utc).isoformat(),
+            "module_results": {},
+            "findings": [],
+            "error": f"preflight_failed: {reason}",
+        }
+    if not quiet:
+        log.info(f"[preflight] OK ({reason})")
+    # === End preflight ===
 
     if module_names:
         apply_modules(config, module_names)

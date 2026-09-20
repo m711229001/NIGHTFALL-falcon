@@ -96,6 +96,46 @@ docker compose exec backend sh -c "ls -t /app/framework/output/*.md | head -1 | 
 ### إعادة تشغيل Backend
 docker compose restart backend
 
+# Falcon MAG v2 — Session State
+
+## 📌 آخر تحديث: 2026-09-20
+
+## ✅ مكتمل 100%
+
+### Session 1: AI تلقائي بعد Scans
+- `cli.py`: flags `--no-ai` + `--ai-max` + تمريرها إلى `_run_scan()`
+- `_run_scan()`: AI enrichment كامل (extract + analyze + summary)
+- `report.py: save_markdown()`: عرض AI كامل (explanation, PoC, remediation, refs)
+- `report.py: save_excel()`: 6 أعمدة AI (CVSS, Severity, Explanation, PoC, Remediation, Refs)
+- اختبار ناجح: 12.89s, 22 finding, JSON+MD+XLSX ✅
+
+### Session 2: اختبار الموديولات الجديدة
+- tech_fingerprint ✅
+- nextjs_middleware_bypass ✅ (CVE-2025-29927)
+- rsc_data_leakage ✅
+- graphql_relay_idor ✅
+- react2shell_rce ✅
+- ssr_proto_pollution ✅
+- كلها مسجلة في MODULE_REGISTRY + run() قابلة للاستدعاء
+- اختبار runtime ناجح ضد httpbin.org (77s, 0 findings — expected)
+
+## 🚧 التالي (Session 3)
+
+### Frontend AI Display (60 دقيقة)
+- [ ] `VulnDetailDrawer.jsx` — عرض AI PoC + explanation + remediation
+- [ ] `DashboardV2.jsx` — عرض AI executive summary
+- [ ] API: التأكد أن `/api/scans/{id}` يعيد `_ai_summary` و `_ai_enriched`
+
+## 🔑 آخر commit
+bb04469 — chore(gitignore): exclude test_output/ from repo
+(+ b58e1d6 — feat(report): add AI columns to Excel)
+(+ 1893153 — chore: remove accidental files)
+
+## 🛠️ أوامر مرجعية
+- rebuild: `docker compose build backend && docker compose up -d backend`
+- scan: `docker compose exec backend python framework/cli.py scan URL --mode fast --no-ai`
+- syntax: `python -c "import ast; ast.parse(open('file.py', encoding='utf-8').read()); print('OK')"`
+
 ---
 
 ## ملاحظات مهمة

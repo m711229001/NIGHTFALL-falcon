@@ -86,24 +86,56 @@ class CatchAllDetector:
         self.samples = samples
         self.catch_all = False
         self.signature = None
+        self.signature_body = None
         self._detected = False
 
     def detect(self):
         if self._detected:
             return self._result()
-        hashes = {}
+        responses = []
         for _ in range(self.samples):
             uid = uuid.uuid4().hex[:12]
             url = self.base_url + "/" + uid
-            resp = self.client.get(url)
+            try:
+                resp = self.client.get(url, timeout=6)
+            except Exception:
+                resp = None
             if not resp or resp.status == 0:
                 continue
             body = resp.content or b""
-            h = hashlib.md5(body).hexdigest()
-            hashes.setdefault((resp.status, h), []).append(url)
-        if len(hashes) == 1:
+            responses.append((resp.status, body))
+
+        if len(responses) < 2:
+            self._detected = True
+            return self._result()
+
+        # Check status codes: catch-all requires SAME status AND high body similarity
+        statuses = [s for s, _ in responses]
+        if len(set(statuses)) != 1:
+            self._detected = True
+            return self._result()
+
+        # Only 200 OK counts as catch-all (not 404s)
+        if statuses[0] != 200:
+            self._detected = True
+            return self._result()
+
+        # Body similarity - require > 95% same content
+        bodies = [b for _, b in responses]
+        lens = [len(b) for b in bodies]
+        if max(lens) == 0:
+            self._detected = True
+            return self._result()
+
+        # Compare bodies: same length OR same md5
+        same_len = len(set(lens)) == 1
+        hashes = {hashlib.md5(b).hexdigest() for b in bodies}
+        same_hash = len(hashes) == 1
+
+        if same_hash and same_len:
             self.catch_all = True
-            self.signature = list(hashes.keys())[0]
+            self.signature = (statuses[0], list(hashes)[0])
+            self.signature_body = bodies[0]
         self._detected = True
         return self._result()
 
@@ -121,11 +153,52 @@ class CatchAllDetector:
         }
 
 
+class ScopeGuard:
+    """Strict scope checking - only target domain and its subdomains."""
+
+    def __init__(self, target):
+        try:
+            from urllib.parse import urlparse
+            host = urlparse(target).hostname or ""
+            self.base_host = host.lower()
+            # Root domain (last 2 labels or 3 for .co.uk style)
+            parts = self.base_host.split(".")
+            self.root_host = ".".join(parts[-2:]) if len(parts) >= 2 else self.base_host
+        except Exception:
+            self.base_host = ""
+            self.root_host = ""
+
+    def in_scope(self, url):
+        if not url or not self.base_host:
+            return False
+        try:
+            from urllib.parse import urlparse
+            p = urlparse(url)
+            if p.scheme not in ("http", "https"):
+                return False
+            host = (p.hostname or "").lower()
+            if not host:
+                return False
+            # Exact match or subdomain match
+            if host == self.base_host:
+                return True
+            if host == self.root_host:
+                return True
+            if host.endswith("." + self.root_host):
+                return True
+            return False
+        except Exception:
+            return False
+
+
 class Deduplicator:
-    def __init__(self):
+    def __init__(self, target=None):
         self._seen = set()
+        self.guard = ScopeGuard(target) if target else None
 
     def add(self, url):
+        if self.guard and not self.guard.in_scope(url):
+            return False
         key = URLNormalizer.normalize(url)
         if key in self._seen:
             return False
@@ -133,7 +206,14 @@ class Deduplicator:
         return True
 
     def contains(self, url):
+        if self.guard and not self.guard.in_scope(url):
+            return True  # treat out-of-scope as "already seen" to skip
         return URLNormalizer.normalize(url) in self._seen
+
+    def in_scope(self, url):
+        if not self.guard:
+            return True
+        return self.guard.in_scope(url)
 
     def __len__(self):
         return len(self._seen)

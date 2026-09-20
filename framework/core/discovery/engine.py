@@ -11,11 +11,14 @@ from .sources import (
     parse_js,
     probe_well_known,
 )
+from .sources_history import fetch_all_historical
+from .js_analysis import analyze_js
 from .intelligence import (
     URLNormalizer,
     ScoreRanker,
     CatchAllDetector,
     Deduplicator,
+    ScopeGuard,
 )
 
 log = get_logger("discovery")
@@ -66,9 +69,11 @@ class DiscoveryEngine:
         self.config = config
         self.normalizer = URLNormalizer()
         self.ranker = ScoreRanker()
-        self.dedup = Deduplicator()
+        self.dedup = Deduplicator(target=config.target)
+        self.scope = ScopeGuard(config.target)
         self.catchall = None
         self.stats = {"requests": 0, "errors": 0}
+        self._js_secrets = []
         self._start = time.time()
 
     def discover(self):
@@ -76,7 +81,7 @@ class DiscoveryEngine:
         log.info("Smart Discovery: " + target)
 
         log.info("  [1/5] Catch-all detection...")
-        self.catchall = CatchAllDetector(self.client, target, samples=6)
+        self.catchall = CatchAllDetector(self.client, target, samples=3)
         catchall_info = self.catchall.detect()
         if catchall_info["catch_all"]:
             log.warning("    Catch-all detected - filtering false positives")
@@ -110,6 +115,75 @@ class DiscoveryEngine:
             well_known=well_known,
             catchall_info=catchall_info,
         )
+
+        # AI Crawler Agent (optional) - dynamic flow discovery
+        if self.config.use_ai and getattr(self.config, "use_ai_crawler", False):
+            log.info("  [5b/6] AI Crawler Agent...")
+            try:
+                from .ai_crawler import run_ai_crawler
+                from core.ai_client import UniversalAIClient
+                ai_client = UniversalAIClient()
+                crawler_result = run_ai_crawler(
+                    target,
+                    ai_client=ai_client,
+                    max_steps=getattr(self.config, "ai_crawler_steps", 5),
+                )
+                if crawler_result and crawler_result.get("discovered_urls"):
+                    existing = {e["url"] for e in result.endpoints}
+                    added = 0
+                    for u in crawler_result["discovered_urls"]:
+                        if not self.scope.in_scope(u):
+                            continue
+                        if u in existing:
+                            continue
+                        result.endpoints.append({
+                            "url": u,
+                            "status": None,
+                            "source": "ai-crawler",
+                            "depth": None,
+                            "score": self.ranker.score(u) + 5,
+                        })
+                        added += 1
+                    for form in crawler_result.get("discovered_forms", []):
+                        if isinstance(form, dict):
+                            result.forms.append(form)
+                    result.endpoints.sort(key=lambda x: x["score"], reverse=True)
+                    log.info("    AI crawler: +" + str(added) + " URLs")
+            except Exception as e:
+                log.debug("    AI crawler skipped: " + str(e))
+
+        # AI Advisor (optional) - evaluate ambiguous endpoints
+        if self.config.use_ai and len(result.endpoints) >= 10:
+            log.info("  [6/6] AI Advisor on ambiguous URLs...")
+            try:
+                from .ai_advisor import AIAdvisor
+                advisor = AIAdvisor()
+                suggestions = advisor.evaluate_batch(
+                    [e["url"] for e in result.endpoints[:30]],
+                    self.config,
+                )
+                if suggestions:
+                    existing = {e["url"] for e in result.endpoints}
+                    for s in suggestions:
+                        if not self.scope.in_scope(s["url"]):
+                            continue
+                        if s["url"] not in existing:
+                            result.endpoints.append({
+                                "url": s["url"],
+                                "status": None,
+                                "source": "ai",
+                                "depth": None,
+                                "score": s.get("score", 10),
+                                "reason": s.get("reason", ""),
+                            })
+                    result.endpoints.sort(
+                        key=lambda x: x["score"], reverse=True
+                    )
+                    log.info("    AI suggested " + str(len(suggestions)) + " extra URLs")
+                else:
+                    log.info("    AI: no additional suggestions")
+            except Exception as e:
+                log.debug("    AI Advisor skipped: " + str(e))
         result.stats["duration"] = time.time() - self._start
         result.stats["requests"] = self.stats["requests"]
         result.stats["errors"] = self.stats["errors"]
@@ -125,9 +199,31 @@ class DiscoveryEngine:
             for u in fetch_sitemap(self.client, sm)[:100]:
                 seeds.append((u, 1))
 
+        # Historical passive recon (Wayback + CommonCrawl + OTX)
+        try:
+            log.info("    Fetching historical URLs...")
+            hist = fetch_all_historical(target, limit=300)
+            from .sources_history import is_dangerous_url
+            added = 0
+            skipped = 0
+            for u in hist[:300]:
+                if not self.scope.in_scope(u):
+                    continue
+                if is_dangerous_url(u):
+                    skipped += 1
+                    continue
+                seeds.append((u, 1))
+                added += 1
+            log.info("    +" + str(added) + " historical seeds ("
+                     + str(skipped) + " skipped)")
+        except Exception as e:
+            log.debug("    history failed: " + str(e))
+
         seen = set()
         out = []
         for url, depth in seeds:
+            if not self.scope.in_scope(url):
+                continue
             key = self.normalizer.normalize(url)
             if key in seen:
                 continue
@@ -154,7 +250,10 @@ class DiscoveryEngine:
             if not self.dedup.add(url):
                 continue
 
-            resp = self.client.get(url)
+            try:
+                resp = self.client.get(url, timeout=8)
+            except Exception:
+                resp = None
             self.stats["requests"] += 1
             if not resp or resp.status == 0:
                 self.stats["errors"] += 1
@@ -178,7 +277,17 @@ class DiscoveryEngine:
                 forms.append(form)
 
             for js in parsed["js_files"]:
-                js_files.add(js)
+                # Normalize to prevent duplicate analysis
+                norm_js = self.normalizer.normalize(js)
+                # Rebuild URL from normalized
+                try:
+                    from urllib.parse import urlparse as _up, urlunparse as _uu
+                    p = _up(norm_js)
+                    # Force https for safety
+                    clean = _uu(("https", p.netloc, p.path, "", "", ""))
+                    js_files.add(clean)
+                except Exception:
+                    js_files.add(js)
 
             for link in parsed["links"]:
                 if not self._in_scope(link):
@@ -196,21 +305,58 @@ class DiscoveryEngine:
 
     def _parse_js_files(self, js_urls):
         results = []
+        # Dedup normalized URLs
+        seen_js = set()
         for js_url in js_urls[:30]:
             if self.stats["requests"] >= self.config.budget_requests:
                 break
-            resp = self.client.get(js_url)
+            # Normalize to avoid re-fetching same file
+            norm = self.normalizer.normalize(js_url)
+            if norm in seen_js:
+                continue
+            seen_js.add(norm)
+            # Skip vendor / huge files by PATH only (more precise)
+            try:
+                from urllib.parse import urlparse as _up
+                path_low = _up(js_url).path.lower()
+            except Exception:
+                path_low = js_url.lower()
+            if any(kw in path_low for kw in ("swagger", "bundle", "vendor", "polyfill", "chunk-vendors")):
+                continue
+            try:
+                resp = self.client.get(js_url, timeout=8)
+            except Exception:
+                resp = None
             self.stats["requests"] += 1
             if not resp or resp.status != 200 or not resp.content:
+                continue
+            if len(resp.content) > 500_000:
+                log.debug("    skip large JS: " + js_url[-60:])
                 continue
             parsed = parse_js(resp.content, js_url)
             results.extend(parsed["paths"])
             results.extend(parsed["fetch_calls"])
             results.extend(parsed["axios_calls"])
 
+            # Advanced LinkFinder + SecretFinder
+            try:
+                if len(resp.content) <= 2_000_000:
+                    js_text = resp.content.decode("utf-8", errors="ignore")
+                    adv = analyze_js(js_text, js_url)
+                    results.extend(adv["links"])
+                    if adv["secrets"]:
+                        for s in adv["secrets"]:
+                            s["source_js"] = js_url
+                            self._js_secrets.append(s)
+                        log.info("    [secrets] +" + str(len(adv["secrets"])) + " in " + js_url[-50:])
+            except Exception as e:
+                log.debug("    advanced JS failed: " + str(e))
+
         out = []
         seen = set()
         for u in results:
+            if not self.scope.in_scope(u):
+                continue
             k = self.normalizer.normalize(u)
             if k in seen:
                 continue
@@ -219,10 +365,14 @@ class DiscoveryEngine:
         return out
 
     def _in_scope(self, url):
+        # 1. Strict local scope check FIRST
+        if not self.scope.in_scope(url):
+            return False
+        # 2. Fall back to client's check if available
         try:
             return self.client.in_scope(url)
         except Exception:
-            return False
+            return True
 
     def _build_result(self, target, pages, forms, js_files, js_endpoints,
                       well_known, catchall_info):
@@ -248,6 +398,8 @@ class DiscoveryEngine:
             })
 
         for wk in well_known:
+            if not self.scope.in_scope(wk["url"]):
+                continue
             endpoints.append({
                 "url": wk["url"],
                 "status": wk["status"],
@@ -284,7 +436,7 @@ class DiscoveryEngine:
                         "url": f.get("action", ""),
                     })
 
-        return DiscoveryResult(
+        result = DiscoveryResult(
             target=target,
             endpoints=endpoints,
             params=params,
@@ -293,6 +445,11 @@ class DiscoveryEngine:
             catchall_info=catchall_info,
             stats={},
         )
+        try:
+            result.js_secrets = self._js_secrets
+        except Exception:
+            pass
+        return result
 
 
 def discover(client, config):

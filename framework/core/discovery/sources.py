@@ -145,9 +145,7 @@ def parse_js(content, base_url):
 WELL_KNOWN = (
     "/.well-known/security.txt",
     "/.well-known/openid-configuration",
-    "/.well-known/assetlinks.json",
     "/security.txt",
-    "/humans.txt",
     "/manifest.json",
     "/api",
     "/api/v1",
@@ -162,7 +160,10 @@ def probe_well_known(client, base_url, catchall=None):
     hits = []
     for path in WELL_KNOWN:
         url = urljoin(base_url, path)
-        resp = client.get(url)
+        try:
+            resp = client.get(url, timeout=4)
+        except Exception:
+            resp = None
         if not resp or resp.status == 0:
             continue
         if catchall and catchall.is_catchall(resp.status, resp.content):

@@ -110,6 +110,38 @@ def _extract_post_params(config):
     return params
 
 
+
+def _collect_target_params(config, target):
+    """Collect params from URL + discovered_params + crawled URLs."""
+    from urllib.parse import urlparse, parse_qs
+
+    params = {}
+
+    # URL params
+    parsed = urlparse(target)
+    for p in parse_qs(parsed.query, keep_blank_values=True):
+        params[p] = target
+
+    # Discovered params → assume they go on the target URL
+    for p in (config.get("_discovered_params", []) or [])[:10]:
+        if p not in params:
+            params[p] = target
+
+    # Crawled URLs
+    crawl = config.get("_crawl_result", {}) or {}
+    for page in crawl.get("pages", []) or []:
+        url = page if isinstance(page, str) else (page.get("url") if isinstance(page, dict) else None)
+        if not url or "?" not in url:
+            continue
+        parsed = urlparse(url)
+        for p in parse_qs(parsed.query, keep_blank_values=True):
+            if p not in params:
+                params[p] = url
+
+    return params
+
+
+
 def run(client, config):
     target = config.get("target", "")
     if not target:
@@ -127,6 +159,28 @@ def run(client, config):
 
     parsed = urlparse(target)
     qs = parse_qs(parsed.query, keep_blank_values=True)
+
+    # === ADDED: inject discovered params ===
+    discovered = config.get("_discovered_params", []) or []
+    if discovered:
+        # If target has no params, build test URLs from discovered params
+        if not qs:
+            # Use the first discovered param
+            first_param = discovered[0]
+            sep = "?" if "?" not in target else "&"
+            target_with_param = target + sep + first_param + "=1"
+            # Re-parse to populate qs
+            parsed = urlparse(target_with_param)
+            qs = parse_qs(parsed.query, keep_blank_values=True)
+            # Keep both URLs so we test with the original target too
+            target = target_with_param
+            log.info(f"  Testing discovered param: {first_param}")
+        # Add more discovered params if there's already a query
+        else:
+            for param in discovered[:5]:
+                if param not in qs:
+                    qs[param] = ["1"]
+            log.info(f"  Added {min(5, len(discovered))} discovered params")
 
     if not qs:
         log.info("  No URL parameters to test")

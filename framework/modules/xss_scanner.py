@@ -80,22 +80,39 @@ def _find_context(html: str, payload: str) -> dict:
 
 
 def _collect_test_urls(config, crawl_result) -> list:
-    """Collect URLs with query parameters to test."""
+    """Collect URLs with query parameters to test.
+
+    Includes discovered params from param_discovery module.
+    """
+    from urllib.parse import urlparse, urlunparse
     urls = set()
 
     target = config.get("target", "")
     if "?" in target:
         urls.add(target)
 
+    # === ADDED: inject discovered params ===
+    discovered = config.get("_discovered_params", []) or []
+    if discovered and target:
+        parsed = urlparse(target)
+        for param in discovered[:15]:  # cap at 15 for speed
+            new_q = f"{param}=1"
+            if parsed.query:
+                new_q = parsed.query + "&" + new_q
+            url_with_param = urlunparse(parsed._replace(query=new_q))
+            urls.add(url_with_param)
+    # === END ===
+
     if crawl_result:
         for page in crawl_result.get("pages", []):
-            if "?" in page.get("url", ""):
+            if isinstance(page, dict) and "?" in page.get("url", ""):
                 urls.add(page["url"])
+            elif isinstance(page, str) and "?" in page:
+                urls.add(page)
 
-    # From crawl_result visited urls
     if crawl_result:
         for u in crawl_result.get("visited", []):
-            if "?" in u:
+            if isinstance(u, str) and "?" in u:
                 urls.add(u)
 
     return sorted(urls)
@@ -131,6 +148,42 @@ def _extract_post_params(config):
             pass
 
     return params
+
+
+
+def _get_targets_with_params(config, target):
+    """Collect all URL+param combinations including discovered params."""
+    from urllib.parse import urlparse, urlunparse
+
+    targets = []
+
+    # 1. Original target with existing params
+    parsed = urlparse(target)
+    if parsed.query:
+        targets.append(target)
+
+    # 2. Use discovered params from param_discovery
+    discovered = config.get("_discovered_params", []) or []
+    if discovered:
+        # Add target with first 10 discovered params (cap for speed)
+        for param in discovered[:10]:
+            new_query = f"{param}=1"
+            if parsed.query:
+                new_query = parsed.query + "&" + new_query
+            url_with_param = urlunparse(parsed._replace(query=new_query))
+            targets.append(url_with_param)
+
+    # 3. Crawled URLs with params
+    crawl = config.get("_crawl_result", {}) or {}
+    for page in crawl.get("pages", []) or []:
+        if isinstance(page, str) and "?" in page:
+            targets.append(page)
+        elif isinstance(page, dict) and page.get("url") and "?" in page.get("url", ""):
+            targets.append(page["url"])
+
+    # Deduplicate
+    return list(set(targets))
+
 
 
 def run(client, config, crawl_result=None) -> dict:

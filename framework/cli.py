@@ -112,6 +112,7 @@ MODULE_REGISTRY = {
     # Phase 1 — Reconnaissance
     "fingerprint":          "modules.fingerprint",
     "headers_check":        "modules.headers_check",
+    "param_discovery":      "modules.param_discovery",
     "crawler":              "modules.crawler",
     "js_analyzer":          "modules.js_analyzer",
     "path_discovery":       "modules.path_discovery",
@@ -149,12 +150,13 @@ MODULE_REGISTRY = {
 # ============================================================
 # Bridge: feeders run first, sequentially, before scanners
 # ============================================================
-FEEDER_MODULES = ["crawler", "playwright_crawler", "js_analyzer"]
+FEEDER_MODULES = ["crawler", "playwright_crawler", "js_analyzer", "param_discovery"]
 
 FEEDER_KEYS = {
     "crawler":            "_crawl_result",
     "playwright_crawler": "_crawl_result",
     "js_analyzer":        "_js_analyzer",
+    "param_discovery":    "_param_discovery",
 }
 
 # Modules that accept a crawl_result kwarg
@@ -196,10 +198,10 @@ def _count_findings(data: dict) -> int:
     if not isinstance(data, dict):
         return 0
     count = 0
+    # NOTE: js_files, endpoints are informational (not findings)
     for key in ("vulnerable", "real_paths", "open_ports", "secrets",
                 "vulnerable_forms", "weak_protocols",
                 "found", "cves", "dangerous", "insecure",
-                "endpoints", "js_files",
                 # ADDED 2026-09-20: more finding keys
                 "findings", "issues", "alerts", "leaks", "hits",
                 "suspicious", "exposed", "misconfigurations",

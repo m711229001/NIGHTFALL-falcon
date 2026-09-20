@@ -78,6 +78,7 @@ wordlists:
   paths: "wordlists/paths.txt"
   subdomains: "wordlists/subdomains.txt"
   common: "wordlists/common.txt"
+  params_common: "wordlists/params_common.txt"
 
 # OAST (للكشف الأعمى)
 oast:

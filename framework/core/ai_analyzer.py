@@ -168,10 +168,23 @@ def _call_deepseek(system_prompt: str, user_prompt: str,
 
     log.debug("AI call: provider=" + str(provider.get("name")) + " model=" + str(model))
 
+    # Use provider-specific auth header (Anthropic uses x-api-key with NO prefix)
+    auth_header = provider.get("auth_header")
+    if auth_header is None:
+        auth_header = "Authorization"
+    auth_prefix = provider.get("auth_prefix")
+    if auth_prefix is None:
+        auth_prefix = "Bearer "
+
     headers = {
-        "Authorization": "Bearer " + api_key,
+        auth_header: auth_prefix + api_key,
         "Content-Type": "application/json",
     }
+
+    # Anthropic also requires anthropic-version
+    provider_name = (provider.get("name") or "").lower()
+    if "anthropic" in provider_name or "claude" in provider_name:
+        headers["anthropic-version"] = "2023-06-01"
     payload = {
         "model": model,
         "messages": [

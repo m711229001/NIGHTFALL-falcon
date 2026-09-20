@@ -567,6 +567,27 @@ def _run_scan(target: str, module_names: list, config_path: str = None,
     if http_kwargs and http_kwargs.get("extra_headers"):
         config["_auth_headers"] = http_kwargs["extra_headers"]
 
+    # === ADDED: convert --post-data into a POST form (2026-09-20) ===
+    if http_kwargs:
+        post_data = http_kwargs.get("post_data")
+        if post_data and "=" in post_data:
+            fields = []
+            for pair in post_data.split("&"):
+                if "=" in pair:
+                    k = pair.split("=", 1)[0]
+                    fields.append(k)
+            if fields:
+                existing = config.get("_crawl_forms_post", []) or []
+                existing.append({
+                    "action": target,
+                    "body": post_data,
+                    "fields": fields,
+                    "source": "cli_post_data",
+                })
+                config["_crawl_forms_post"] = existing
+                if not quiet:
+                    log.info(f"  [post-data] Converted to POST form ({len(fields)} fields)")
+
     # ---- HTTP client ----
     client = HTTPClient(config=config, **(http_kwargs or {}))
 

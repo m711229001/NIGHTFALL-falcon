@@ -19,7 +19,9 @@ async def _crawl_async(client, config):
     scan_cfg = config.get("scan", {})
     max_depth = scan_cfg.get("max_depth", 3)
     max_pages = scan_cfg.get("max_pages", 100)
-    timeout = scan_cfg.get("timeout", 15) * 1000
+    # Use crawl-specific timeout if configured (ADDED 2026-09-20)
+    crawl_timeout = config.get("_crawl_timeout", scan_cfg.get("timeout", 15))
+    timeout = crawl_timeout * 1000
     user_agent = scan_cfg.get("user_agent", "FalconMAG/1.0")
 
     visited = set()

@@ -10,7 +10,7 @@ log = get_logger("xss")
 
 # Real XSS payloads
 PAYLOADS = [
-    # Basic
+    # Basic (require < or > breakout)
     "<script>alert(1)</script>",
     "<script>alert(document.domain)</script>",
     # Attribute break
@@ -21,15 +21,14 @@ PAYLOADS = [
     "'><img src=x onerror=alert(1)>",
     # SVG
     "<svg/onload=alert(1)>",
-    # Event handler
+    # Event handler (require quote breakout)
     '" onmouseover=alert(1) x="',
     "' onmouseover=alert(1) x='",
     # HTML5
     "<details open ontoggle=alert(1)>",
     "<video><source onerror=alert(1)>",
     # Polyglot
-    "javascript:alert(1)",
-    "jaVasCript:/*-/*`/*\\`/*'/*\"/**/(/* */oNcliCk=alert() )//",
+    "<svg/onload=alert(1) x=\"",
 ]
 
 # Unique marker to verify reflection
@@ -77,6 +76,51 @@ def _find_context(html: str, payload: str) -> dict:
         "after": after[:80],
         "is_raw": is_raw,
     }
+
+
+def _verify_reflection(html: str, payload: str) -> bool:
+    """Return True ONLY if payload is reflected UNESCAPED in a dangerous way.
+
+    Filters:
+      - Encoded reflections (&lt;, &gt;, &quot;, &#x...) → not vulnerable
+      - Payload in plain HTML text without < or > → not exploitable
+    """
+    if not html or not payload:
+        return False
+
+    # 1. Payload must contain an actual tag breakout (< or ") to be exploitable
+    #    (unless it's a very rare case of attribute injection without <>
+    has_tag_open = "<" in payload
+    has_quote_break = '"' in payload or "'" in payload
+
+    if not has_tag_open and not has_quote_break:
+        # No exploitable breakout → reject (javascript: in text is safe)
+        return False
+
+    # 2. Find raw reflection
+    idx = html.find(payload)
+    if idx < 0:
+        return False
+
+    # 3. Check if the payload is HTML-encoded in the response
+    # Take the char right before payload, look for common encodings
+    # If < appears as &lt; right before, it's encoded
+    before_ctx = html[max(0, idx - 30):idx]
+    if "&lt;" in before_ctx or "&gt;" in before_ctx or "&quot;" in before_ctx:
+        return False
+
+    # 4. Check the payload itself isn't present as escaped text nearby
+    #    Example: searching for <script> but finding &lt;script&gt;
+    escaped_variants = [
+        payload.replace("<", "&lt;").replace(">", "&gt;"),
+        payload.replace('"', "&quot;"),
+        payload.replace("'", "&#39;"),
+    ]
+    for esc in escaped_variants:
+        if esc != payload and esc in html:
+            return False
+
+    return True
 
 
 def _collect_test_urls(config, crawl_result) -> list:
@@ -233,7 +277,7 @@ def run(client, config, crawl_result=None) -> dict:
                     continue
 
                 # Check if payload is reflected raw
-                if payload in resp.text:
+                if _verify_reflection(resp.text, payload):
                     ctx = _find_context(resp.text, payload)
                     if ctx and ctx.get("is_raw"):
                         finding = {
@@ -284,7 +328,7 @@ def run(client, config, crawl_result=None) -> dict:
                     continue
 
                 # Check reflection
-                if payload in resp.text:
+                if _verify_reflection(resp.text, payload):
                     ctx = _find_context(resp.text, payload)
                     if ctx and ctx.get("is_raw"):
                         finding = {

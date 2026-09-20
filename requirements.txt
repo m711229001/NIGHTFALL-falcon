@@ -37,3 +37,6 @@ anyio>=4.4.0
 
 # Logging
 structlog>=24.1.0
+
+# TLS impersonation (JA3 bypass)
+curl_cffi>=0.7.0

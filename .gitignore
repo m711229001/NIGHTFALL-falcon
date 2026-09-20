@@ -274,3 +274,6 @@ _git_*.py
 *.py.backup*
 *_backup_*
 framework/core/*.backup*
+
+# Test outputs
+test_output/

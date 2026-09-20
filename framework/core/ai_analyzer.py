@@ -153,22 +153,41 @@ def _build_chat_url(base_url: str) -> str:
     return base_url + "/chat/completions"
 
 
-def _call_deepseek(system_prompt: str, user_prompt: str,
-                   timeout: int = 120, max_tokens: int = 4000,
-                   json_mode: bool = False) -> Optional[str]:
-    """Send prompt to the active AI provider and return response."""
-    provider = _get_active_provider()
-    if not provider or not provider.get("api_key"):
-        log.warning("No AI provider configured (check /v2/ai-settings)")
+def _get_ordered_providers() -> list:
+    """Return all configured providers, active first."""
+    try:
+        from core.ai_config_store import get_ai_config
+        cfg = get_ai_config()
+        raw = cfg.get_raw()
+        active = raw.get("active_provider")
+        names = list(raw.get("providers", {}).keys())
+        ordered = ([active] if active else []) + [n for n in names if n != active]
+        result = []
+        for n in ordered:
+            p = cfg.get_provider(n)
+            if p and (p.get("api_key") or p.get("no_key_required")):
+                result.append(p)
+        return result
+    except Exception as e:
+        log.debug("get_ordered_providers failed: " + str(e))
+        return []
+
+
+def _call_single_provider(provider: dict, system_prompt: str, user_prompt: str,
+                          timeout: int, max_tokens: int, json_mode: bool):
+    """Low-level HTTP call to one provider. Returns response text or None."""
+    if not HTTPX_AVAILABLE:
         return None
 
-    api_key = provider["api_key"]
+    api_key = provider.get("api_key", "")
     model = provider.get("model") or DEEPSEEK_MODEL
     api_url = _build_chat_url(provider.get("base_url") or "")
+    pname = (provider.get("name") or "").lower()
 
-    log.debug("AI call: provider=" + str(provider.get("name")) + " model=" + str(model))
+    if not api_key and not provider.get("no_key_required"):
+        return None
 
-    # Use provider-specific auth header (Anthropic uses x-api-key with NO prefix)
+    # Provider-specific auth header
     auth_header = provider.get("auth_header")
     if auth_header is None:
         auth_header = "Authorization"
@@ -180,11 +199,9 @@ def _call_deepseek(system_prompt: str, user_prompt: str,
         auth_header: auth_prefix + api_key,
         "Content-Type": "application/json",
     }
-
-    # Anthropic also requires anthropic-version
-    provider_name = (provider.get("name") or "").lower()
-    if "anthropic" in provider_name or "claude" in provider_name:
+    if "anthropic" in pname or "claude" in pname:
         headers["anthropic-version"] = "2023-06-01"
+
     payload = {
         "model": model,
         "messages": [
@@ -194,71 +211,131 @@ def _call_deepseek(system_prompt: str, user_prompt: str,
         "temperature": 0.3,
         "max_tokens": max_tokens,
     }
-    # DeepSeek supports JSON mode; use it when requested.
-    if json_mode:
+    if json_mode and "anthropic" not in pname and "claude" not in pname:
         payload["response_format"] = {"type": "json_object"}
 
-    # Retry loop (ADDED 2026-09-20)
-    max_retries = 3
-    for attempt in range(1, max_retries + 1):
+    try:
+        with httpx.Client(timeout=timeout) as client:
+            resp = client.post(api_url, headers=headers, json=payload)
+            if resp.status_code != 200:
+                log.warning("  [" + provider.get("name", "?") + "] HTTP " + str(resp.status_code))
+                return None
+            data = resp.json()
+            return data["choices"][0]["message"]["content"]
+    except Exception as e:
+        err = str(e).lower()
+        # Suppress timeout warnings (noisy from parallel calls)
+        if "timed out" in err or "timeout" in err:
+            log.debug("  [" + provider.get("name", "?") + "] timeout (suppressed)")
+        else:
+            log.debug("  [" + provider.get("name", "?") + "] " + str(e)[:100])
+        return None
+
+
+def _call_deepseek(system_prompt: str, user_prompt: str,
+                   timeout: int = 120, max_tokens: int = 4000,
+                   json_mode: bool = False) -> Optional[str]:
+    """Call active provider with smart fallback.
+
+    Strategy:
+      - Try active provider first
+      - After HEDGE_AFTER seconds, start the next provider in parallel
+      - Return the first successful response
+      - This makes the tool resilient to slow/unavailable providers
+    """
+    HEDGE_AFTER = 10      # seconds before starting fallback
+    PER_PROVIDER = 30     # max time per provider
+
+    import concurrent.futures
+
+    providers = _get_ordered_providers()
+    if not providers:
+        log.warning("No AI provider configured")
+        return None
+
+    log.debug("Provider chain: " + " -> ".join(p.get("name", "?") for p in providers))
+
+    # Start the first provider
+    executor = concurrent.futures.ThreadPoolExecutor(max_workers=len(providers))
+    try:
+        # Map: future -> provider name
+        futures = {}
+        primary = providers[0]
+        log.debug("AI call: provider=" + str(primary.get("name")) + " model=" + str(primary.get("model")))
+        futures[executor.submit(_call_single_provider, primary, system_prompt, user_prompt,
+                                PER_PROVIDER, max_tokens, json_mode)] = primary.get("name")
+
+        # Wait for primary with hedge timeout
+        done, pending = concurrent.futures.wait(
+            futures, timeout=HEDGE_AFTER,
+            return_when=concurrent.futures.FIRST_COMPLETED
+        )
+
+        if done:
+            for f in done:
+                try:
+                    result = f.result()
+                    if result:
+                        return result
+                except Exception:
+                    pass
+
+        # Primary didn't respond in time → hedge with fallbacks
+        if len(providers) > 1:
+            log.info("[AI] Primary slow (>" + str(HEDGE_AFTER) + "s), starting fallback providers...")
+            for p in providers[1:]:
+                log.debug("AI fallback: provider=" + str(p.get("name")) + " model=" + str(p.get("model")))
+                futures[executor.submit(_call_single_provider, p, system_prompt, user_prompt,
+                                        PER_PROVIDER, max_tokens, json_mode)] = p.get("name")
+
+        # Wait for ANY provider to succeed
+        remaining = timeout - HEDGE_AFTER if timeout > HEDGE_AFTER else PER_PROVIDER
         try:
-            with httpx.Client(timeout=timeout) as client:
-                resp = client.post(api_url, headers=headers, json=payload)
-                if resp.status_code == 429 or resp.status_code >= 500:
-                    if attempt < max_retries:
-                        wait = 2 ** attempt
-                        log.warning(f"AI API {resp.status_code} — retry {attempt}/{max_retries} in {wait}s")
-                        time.sleep(wait)
-                        continue
-                    log.warning(f"AI API error: {resp.status_code} (gave up)")
-                    return None
-                if resp.status_code != 200:
-                    log.warning(f"AI API error: {resp.status_code}")
-                    log.debug("Response: " + resp.text[:500])
-                    return None
-                data = resp.json()
-                return data["choices"][0]["message"]["content"]
-        except Exception as e:
-            err = str(e)
-            is_transient = (
-                "disconnected" in err.lower() or
-                "timeout" in err.lower() or
-                "connection" in err.lower() or
-                "remote" in err.lower()
-            )
-            if is_transient and attempt < max_retries:
-                wait = 2 ** attempt
-                log.warning(f"AI call failed ({err[:60]}) — retry {attempt}/{max_retries} in {wait}s")
-                time.sleep(wait)
-                continue
-            log.warning(f"AI call failed: {err[:120]}")
-            return None
-    return None
+            for f in concurrent.futures.as_completed(futures, timeout=remaining):
+                try:
+                    result = f.result()
+                    if result:
+                        name = futures.get(f, "?")
+                        log.debug("[AI] Got response from: " + str(name))
+                        return result
+                except Exception:
+                    pass
+        except concurrent.futures.TimeoutError:
+            log.warning("[AI] All providers timed out")
+
+        return None
+    finally:
+        executor.shutdown(wait=False)
 
 
 def _extract_json(text: str) -> Optional[dict]:
-    """Extract JSON object from AI response (handles markdown fences + nested braces)."""
+    """Extract JSON object from AI response.
+
+    Handles:
+      - plain JSON
+      - markdown fences (```json ... ```)
+      - prose before/after JSON
+      - nested objects
+      - escaped braces inside strings
+    """
     if not text:
         return None
 
     text = text.strip()
 
-    # Strip markdown code fences (starts with triple-backtick)
-    if text.startswith("`" * 3):
-        lines = text.split("\n")
-        if lines[0].startswith("`" * 3):
-            lines = lines[1:]
-        if lines and lines[-1].strip() == "`" * 3:
-            lines = lines[:-1]
-        text = "\n".join(lines).strip()
+    # 1. Strip leading/trailing markdown code fences (flexible)
+    import re
+    text = re.sub(r"^`{3}(?:json|JSON)?\s*", "", text)
+    text = re.sub(r"\s*`{3}\s*$", "", text)
+    text = text.strip()
 
-    # Try direct parse first
+    # 2. Try direct parse
     try:
         return json.loads(text)
     except Exception:
         pass
 
-    # Find balanced JSON object (handles braces inside strings)
+    # 3. Find first { and locate balanced }
     start = text.find("{")
     if start < 0:
         return None
@@ -297,10 +374,21 @@ def _extract_json(text: str) -> Optional[dict]:
     if end <= start:
         return None
 
+    candidate = text[start:end]
     try:
-        return json.loads(text[start:end])
+        return json.loads(candidate)
     except Exception:
-        return None
+        pass
+
+    # 4. Try parsing after replacing common issues
+    try:
+        # Remove trailing commas
+        cleaned = re.sub(r",\s*([}\]])", r"\1", candidate)
+        return json.loads(cleaned)
+    except Exception:
+        pass
+
+    return None
 
 
 # ============================================================
@@ -406,7 +494,8 @@ def analyze_finding(finding: dict) -> dict:
 
     ai_data = _extract_json(response)
     if not ai_data:
-        log.debug("Could not extract JSON from AI response")
+        log.warning("Could not extract JSON. Raw response (first 500 chars):")
+        log.warning(response[:500] if response else "(empty)")
         return finding
 
     # Enrich finding

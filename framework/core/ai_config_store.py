@@ -362,6 +362,27 @@ class AIConfigStore:
         log.info(f"✓ Provider '{name}' saved (model={model})")
         return self.get_raw()
 
+    def get_provider(self, name: str) -> Optional[dict[str, Any]]:
+        """Get a specific provider by name (with decrypted key)."""
+        self._ensure_loaded()
+        name = name.strip().lower()
+        with self._lock:
+            p = self._config.get("providers", {}).get(name)
+            if not p:
+                return None
+
+            template = KNOWN_PROVIDERS.get(name, {})
+            return {
+                "name": name,
+                "label": template.get("label", name),
+                "api_key": self._decrypt(p.get("key_encrypted", "")),
+                "model": p.get("model") or (template.get("models", [None])[0]),
+                "base_url": p.get("base_url") or template.get("base_url", ""),
+                "auth_header": template.get("auth_header", "Authorization"),
+                "auth_prefix": template.get("auth_prefix", "Bearer "),
+                "no_key_required": template.get("no_key_required", False),
+            }
+
     def activate(self, name: str) -> dict[str, Any]:
         """يفعّل مزوداً موجوداً."""
         name = name.strip().lower()

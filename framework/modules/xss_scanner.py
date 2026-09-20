@@ -82,7 +82,7 @@ def _find_context(html: str, payload: str) -> dict:
 def _collect_test_urls(config, crawl_result) -> list:
     """Collect URLs with query parameters to test.
 
-    Includes discovered params from param_discovery module.
+    Includes: target, discovered params, crawl pages, GET forms.
     """
     from urllib.parse import urlparse, urlunparse
     urls = set()
@@ -90,6 +90,14 @@ def _collect_test_urls(config, crawl_result) -> list:
     target = config.get("target", "")
     if "?" in target:
         urls.add(target)
+
+    # === ADDED: GET forms from crawler ===
+    get_forms = config.get("_crawl_forms_get", []) or []
+    for form in get_forms:
+        u = form.get("url") if isinstance(form, dict) else None
+        if u and "?" in u:
+            urls.add(u)
+    # === END ===
 
     # === ADDED: inject discovered params ===
     discovered = config.get("_discovered_params", []) or []

@@ -83,6 +83,24 @@ def _measure_baseline(client, url, param):
     return sum(times) / len(times)
 
 
+def _measure_baseline_post(client, action: str, body: str) -> float:
+    """Measure normal response time for a POST form."""
+    times = []
+    for _ in range(2):
+        t0 = time.time()
+        try:
+            client.request(
+                "POST", action, data=body,
+                headers={"Content-Type": "application/x-www-form-urlencoded"},
+            )
+        except Exception:
+            pass
+        times.append(time.time() - t0)
+    if not times:
+        return 1.0
+    return sum(times) / len(times)
+
+
 def _extract_post_params(config):
     """Extract POST body params (form or JSON)."""
     params = []
@@ -159,6 +177,55 @@ def run(client, config):
 
     parsed = urlparse(target)
     qs = parse_qs(parsed.query, keep_blank_values=True)
+
+    # === ADDED: also test GET forms from crawler ===
+    get_forms = config.get("_crawl_forms_get", []) or []
+    for form in get_forms[:3]:
+        u = form.get("url") if isinstance(form, dict) else None
+        if not u or "?" not in u:
+            continue
+        try:
+            fp = urlparse(u)
+            fqs = parse_qs(fp.query, keep_blank_values=True)
+            for param in fqs:
+                if param not in qs:
+                    # Run SQLi test on this form URL
+                    result["tested"] += 0
+                    base_time_form = _measure_baseline(client, u, param)
+                    for payload, expected_sleep in SLEEP_PAYLOADS[:2]:
+                        result["tested"] += 1
+                        test_url = _inject(u, param, payload)
+                        t0 = time.time()
+                        r = client.scan_request(test_url)
+                        elapsed = time.time() - t0
+                        if not r:
+                            continue
+                        sig = _has_db_error(r.text)
+                        if sig:
+                            log.warning(f"  SQLi (GET form) in '{param}' — {sig}")
+                            result["vulnerable"].append({
+                                "url": u, "original_url": u,
+                                "injected_url": test_url, "test_url": test_url,
+                                "param": param, "payload": payload,
+                                "type": "error-based", "db_error": sig,
+                                "delay_ms": 0, "severity": "critical",
+                            })
+                            break
+                        threshold = max(expected_sleep - 0.5, base_time_form * 2 + 3)
+                        if elapsed >= threshold:
+                            log.warning(f"  SQLi (GET form time) in '{param}' — {elapsed:.2f}s")
+                            result["vulnerable"].append({
+                                "url": u, "original_url": u,
+                                "injected_url": test_url, "test_url": test_url,
+                                "param": param, "payload": payload,
+                                "type": "time-based", "db_error": f"{elapsed:.2f}s",
+                                "delay_ms": round(elapsed * 1000, 2),
+                                "severity": "critical",
+                            })
+                            break
+        except Exception:
+            continue
+    # === END ===
 
     # === ADDED: inject discovered params ===
     discovered = config.get("_discovered_params", []) or []
@@ -318,6 +385,83 @@ def run(client, config):
                         "method": "POST", "severity": "critical",
                     })
                     break
+
+    # === POST form SQLi testing (ADDED 2026-09-20) ===
+    forms_post = config.get("_crawl_forms_post", []) or []
+    for form in forms_post[:3]:
+        action = form.get("action", "")
+        body_template = form.get("body", "")
+        fields = form.get("fields", [])
+        if not action or not body_template:
+            continue
+
+        base_time = _measure_baseline_post(client, action, body_template)
+
+        for field in fields[:5]:
+            for payload, expected_sleep in SLEEP_PAYLOADS[:2]:
+                result["tested"] += 1
+                parts = body_template.split("&")
+                new_parts = []
+                for p in parts:
+                    if "=" in p:
+                        k, v = p.split("=", 1)
+                        new_parts.append(f"{k}={payload}" if k == field else p)
+                    else:
+                        new_parts.append(p)
+                new_body = "&".join(new_parts)
+
+                t0 = time.time()
+                try:
+                    resp = client.request(
+                        "POST", action, data=new_body,
+                        headers={"Content-Type": "application/x-www-form-urlencoded"},
+                    )
+                except Exception:
+                    continue
+                elapsed = time.time() - t0
+
+                if not resp:
+                    continue
+
+                # Error-based
+                sig = _has_db_error(resp.text)
+                if sig:
+                    log.warning(f"  SQLi (POST) in '{field}' — {sig}")
+                    result["vulnerable"].append({
+                        "url": action, "original_url": action,
+                        "injected_url": action, "test_url": action,
+                        "param": field, "payload": payload,
+                        "type": "error-based", "db_error": sig,
+                        "delay_ms": 0, "method": "POST",
+                        "severity": "critical",
+                    })
+                    break
+
+                # Time-based
+                threshold = max(expected_sleep - 0.5, base_time * 2 + 3)
+                if elapsed >= threshold:
+                    log.info(f"  Suspected POST SQLi — verifying...")
+                    t1 = time.time()
+                    try:
+                        client.request(
+                            "POST", action, data=new_body,
+                            headers={"Content-Type": "application/x-www-form-urlencoded"},
+                        )
+                    except Exception:
+                        continue
+                    elapsed2 = time.time() - t1
+
+                    if elapsed2 >= threshold * 0.8:
+                        log.warning(f"  SQLi (POST time-based) in '{field}' — {elapsed:.2f}s+{elapsed2:.2f}s")
+                        result["vulnerable"].append({
+                            "url": action, "original_url": action,
+                            "injected_url": action, "test_url": action,
+                            "param": field, "payload": payload,
+                            "type": "time-based", "db_error": f"delay {elapsed:.2f}s",
+                            "delay_ms": round(elapsed * 1000, 2),
+                            "method": "POST", "severity": "critical",
+                        })
+                        break
 
     if not result["vulnerable"]:
         log.info(f"  No SQLi found ({result['tested']} tested)")

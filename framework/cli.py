@@ -177,6 +177,8 @@ MODE_PRESETS = {
             "fingerprint", "headers_check", "clickjacking",
             "cors_checker", "cookies_checker", "endpoint_catalog",
         ],
+        "max_pages": 10,
+        "crawl_depth": 1,
         "param_discovery_max": 50,
         "xss_max_params": 3,
         "sqli_max_params": 2,
@@ -194,6 +196,8 @@ MODE_PRESETS = {
             "xss_scanner", "sqli_scanner",
             "http_methods", "open_redirect", "endpoint_catalog",
         ],
+        "max_pages": 30,
+        "crawl_depth": 2,
         "param_discovery_max": 150,
         "xss_max_params": 15,
         "sqli_max_params": 8,
@@ -215,6 +219,8 @@ MODE_PRESETS = {
             "path_discovery", "http_methods",
             "tls_checker", "subdomain_enum", "cve_lookup", "endpoint_catalog",
         ],
+        "max_pages": 100,
+        "crawl_depth": 3,
         "param_discovery_max": 300,
         "xss_max_params": 40,
         "sqli_max_params": 20,
@@ -489,7 +495,8 @@ def _run_scan(target: str, module_names: list, config_path: str = None,
               auth_kwargs: dict = None, http_kwargs: dict = None,
               parallel: int = 1,
               enable_ai: bool = True, ai_max_findings: int = 20,
-              scan_mode: str = "normal"):
+              scan_mode: str = "normal",
+              max_pages: int = 30, crawl_depth: int = 2):
     """Core scan engine: feeders first (sequential), then parallel batch."""
     start_time = time.time()
 
@@ -506,6 +513,13 @@ def _run_scan(target: str, module_names: list, config_path: str = None,
     config["_scan_mode"] = scan_mode
     _mode_preset = MODE_PRESETS.get(scan_mode, {})
     config["_mode_preset"] = _mode_preset
+
+    # === Crawl limits (ADDED 2026-09-20) ===
+    config["_max_pages"] = max_pages
+    config["_crawl_depth"] = crawl_depth
+    scan_cfg = config.setdefault("scan", {})
+    scan_cfg["max_pages"] = max_pages
+    scan_cfg["crawl_depth"] = crawl_depth
     # === END ===
 
     # === Preflight: fast-fail on unreachable targets ===
@@ -589,6 +603,64 @@ def _run_scan(target: str, module_names: list, config_path: str = None,
 
         key = FEEDER_KEYS.get(m_name)
         if key and isinstance(m_data, dict) and not m_data.get("error"):
+            # === Extract forms → POST test cases (ADDED 2026-09-20) ===
+            if m_name == "crawler" and key == "_crawl_result":
+                forms = m_data.get("forms", []) or []
+                if forms:
+                    posts = []
+                    get_urls = []
+                    for form in forms[:10]:
+                        if not isinstance(form, dict):
+                            continue
+                        action = form.get("action") or config.get("target", "")
+                        if not action:
+                            continue
+                        method = (form.get("method") or "GET").upper()
+                        inputs = form.get("inputs", []) or []
+                        fields = []
+                        for inp in inputs:
+                            if not isinstance(inp, dict):
+                                continue
+                            name = inp.get("name")
+                            if not name:
+                                continue
+                            val = inp.get("value") or "test"
+                            fields.append((name, val))
+
+                        if not fields:
+                            continue
+
+                        if method == "POST":
+                            posts.append({
+                                "action": action,
+                                "body": "&".join([f"{k}={v}" for k, v in fields]),
+                                "fields": [k for k, _ in fields],
+                            })
+                        else:
+                            # GET form → URL with params
+                            from urllib.parse import urlencode, urlparse, urlunparse, parse_qs
+                            try:
+                                p = urlparse(action)
+                                existing = parse_qs(p.query, keep_blank_values=True)
+                                for k, v in fields:
+                                    if k not in existing:
+                                        existing[k] = [v]
+                                new_q = urlencode({k: v[0] for k, v in existing.items()})
+                                url_with_params = urlunparse(p._replace(query=new_q))
+                                get_urls.append({
+                                    "url": url_with_params,
+                                    "fields": [k for k, _ in fields],
+                                })
+                            except Exception:
+                                pass
+
+                    if posts:
+                        config["_crawl_forms_post"] = posts
+                        log.info(f"  [forms] Extracted {len(posts)} POST form(s)")
+                    if get_urls:
+                        config["_crawl_forms_get"] = get_urls
+                        log.info(f"  [forms] Extracted {len(get_urls)} GET form(s) as URLs")
+
             # Merge if key already exists
             if key in config and isinstance(config[key], dict):
                 merged = config[key]
@@ -797,6 +869,14 @@ def scan(
         None, "--focus",
         help="Vuln focus for custom mode (e.g. xss,sqli,ssrf,idor). Use with --mode custom.",
     ),
+    max_pages: int = typer.Option(
+        30, "--max-pages",
+        help="Max pages for crawler (default: 30).",
+    ),
+    crawl_depth: int = typer.Option(
+        2, "--crawl-depth",
+        help="Max crawl depth (default: 2).",
+    ),
 ):
     """Run a security scan against TARGET."""
     # === MODE RESOLUTION (ADDED 2026-09-20) ===
@@ -929,6 +1009,8 @@ def scan(
         enable_ai=not no_ai,
         ai_max_findings=ai_max,
         scan_mode=mode,
+        max_pages=max_pages,
+        crawl_depth=crawl_depth,
     )
 
     if json_out:

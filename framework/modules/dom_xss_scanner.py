@@ -147,6 +147,103 @@ def _find_true_flows(text: str):
     return unique
 
 
+
+def _playwright_dom_xss_test(target: str, config: dict) -> list:
+    """Use Playwright to test DOM XSS via location.hash / location.search.
+
+    Returns list of vulnerable URLs.
+    """
+    findings = []
+    try:
+        from playwright.sync_api import sync_playwright
+    except ImportError:
+        log.debug("Playwright not available")
+        return findings
+
+    # Unique payload to detect execution
+    payload_marker = "DOMXSS_" + str(int(__import__("time").time()))
+    test_payloads = [
+        "<script>window.__falcon_dom='" + payload_marker + "'</script>",
+        "<img src=x onerror=\"window.__falcon_dom='" + payload_marker + "'\">",
+        "javascript:window.__falcon_dom='" + payload_marker + "'",
+    ]
+
+    # Only test if URL has hash or query params potential
+    from urllib.parse import urlparse
+    p = urlparse(target)
+
+    try:
+        with sync_playwright() as pw:
+            browser = pw.chromium.launch(headless=True)
+            context = browser.new_context(ignore_https_errors=True)
+            page = context.new_page()
+
+            # Track dialog (alert) and DOM mutation
+            for payload in test_payloads:
+                # Test via hash
+                test_urls = []
+                if p.fragment or "#" in target or True:  # always try hash
+                    test_urls.append(target + "#" + payload)
+                # Test via query param
+                sep = "&" if "?" in target else "?"
+                test_urls.append(target + sep + "q=" + payload)
+                test_urls.append(target + sep + "default=" + payload)
+
+                for test_url in test_urls:
+                    try:
+                        # Reset marker
+                        page.goto("about:blank")
+                        page.add_init_script(
+                            "window.__falcon_dom = null;"
+                        )
+                        page.goto(test_url, timeout=8000, wait_until="domcontentloaded")
+                        page.wait_for_timeout(800)
+
+                        # Check if payload executed
+                        marker_val = page.evaluate("window.__falcon_dom")
+                        if marker_val == payload_marker:
+                            log.warning(f"  DOM XSS EXECUTED: {test_url[:80]}")
+                            findings.append({
+                                "url": target,
+                                "original_url": target,
+                                "injected_url": test_url,
+                                "param": "hash" if "#" in test_url else "query",
+                                "payload": payload,
+                                "severity": "high",
+                                "description": "DOM XSS - payload executed via JavaScript",
+                                "evidence": f"window.__falcon_dom = {payload_marker}",
+                            })
+                            break
+
+                        # Also check body HTML for raw payload (unescaped)
+                        body = page.content()
+                        if payload in body and "&lt;script&gt;" not in body:
+                            log.warning(f"  DOM XSS reflected unescaped: {test_url[:80]}")
+                            findings.append({
+                                "url": target,
+                                "original_url": target,
+                                "injected_url": test_url,
+                                "param": "hash" if "#" in test_url else "query",
+                                "payload": payload,
+                                "severity": "high",
+                                "description": "DOM XSS - payload appears unescaped in DOM",
+                                "evidence": test_url[:200],
+                            })
+                            break
+                    except Exception as e:
+                        log.debug(f"Playwright test failed: {str(e)[:80]}")
+                        continue
+
+                if findings:
+                    break
+
+            browser.close()
+    except Exception as e:
+        log.debug(f"Playwright launch failed: {e}")
+
+    return findings
+
+
 def run(client, config, crawl_result=None):
     target = config.get("target", "")
     if not target:
@@ -218,6 +315,11 @@ def run(client, config, crawl_result=None):
                 "confidence": "low",  # NEW: mark as low confidence
                 "note": "Static analysis only — needs manual verification",
             })
+
+    # === PLAYWRIGHT DYNAMIC DOM XSS TEST (ADDED 2026-09-20) ===
+    playwright_findings = _playwright_dom_xss_test(target, config)
+    for pf in playwright_findings:
+        result["vulnerable"].append(pf)
 
     if not result["vulnerable"]:
         log.info(f"  No DOM XSS sinks detected (analyzed {analyzed} files, skipped {result['skipped_libs']} libs)")

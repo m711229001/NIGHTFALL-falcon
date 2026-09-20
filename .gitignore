@@ -275,5 +275,26 @@ _git_*.py
 *_backup_*
 framework/core/*.backup*
 
+# Scan outputs (never commit)
+framework/output/
+output/
+exports/
+bug_bounty_reports/
+data/
+reports/
+
+# Backup files (never commit)
+*.bak
+*.backup*
+*.broken*
+*.broken_*
+*_bak
+*.smsbak
+*.vmsbak
+*.v2bak
+*.smsui_bak
+*.subtabs_bak
+*.py.backup_*
+
 # Test outputs
 test_output/

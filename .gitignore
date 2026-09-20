@@ -268,3 +268,9 @@ _git_*.py
 # Allow framework tests
 !framework/tests/
 !framework/tests/**
+
+# Backups (never commit)
+*.backup*
+*.py.backup*
+*_backup_*
+framework/core/*.backup*

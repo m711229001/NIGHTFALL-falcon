@@ -1,4 +1,4 @@
-"""Falcon MAG - FastAPI Backend Entry Point"""
+﻿"""Falcon MAG - FastAPI Backend Entry Point"""
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
@@ -7,7 +7,7 @@ from pathlib import Path
 from core.config import settings
 from api import auth, scans, findings, reports, export, sarif_export
 # ADDED 2026-09-18: V2 APIs (framework/cli.py integration)
-from api import scans_v2, profiles_v2, auth_v2, ai_config
+from api import scans_v2, profiles_v2, auth_v2, ai_config, chat
 
 
 app = FastAPI(
@@ -51,6 +51,7 @@ app.include_router(scans_v2.router)
 app.include_router(profiles_v2.router)
 app.include_router(auth_v2.router)
 app.include_router(ai_config.router)
+app.include_router(chat.router)
 
 
 @app.get("/")

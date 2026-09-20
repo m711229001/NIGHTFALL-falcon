@@ -189,6 +189,16 @@ export default function TopHeader() {
         </span>
       </button>
 
+      {/* === AI Chat === */}
+      <button
+        onClick={() => navigate("/v2/chat")}
+        className="p-2 rounded-md transition-all hover-lift"
+        style={{ color: "var(--accent-purple)", cursor: "pointer" }}
+        title="AI Assistant"
+      >
+        <Icon name="sparkles" size={18} />
+      </button>
+
       {/* === Search === */}
       <div className="flex-1 max-w-xl">
         <div className="relative">

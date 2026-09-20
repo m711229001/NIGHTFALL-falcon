@@ -1,5 +1,5 @@
-/**
- * TacticalSidebar v2 — Theme-aware, with user section.
+﻿/**
+ * TacticalSidebar v2 â€” Theme-aware, with user section.
  */
 import { NavLink, useNavigate } from "react-router-dom"
 import { useTranslation } from "react-i18next"
@@ -7,17 +7,17 @@ import { useEffect, useState } from "react"
 import WolfEyes from "./WolfEyes"
 
 const NAV_ITEMS = [
-  { to: "/v2/dashboard", icon: "📊", key: "nav.dashboard" },
-  { to: "/v2/new-scan",  icon: "🚀", key: "nav.newScan" },
+  { to: "/v2/dashboard", icon: "ðŸ“Š", key: "nav.dashboard" },
+  { to: "/v2/new-scan",  icon: "ðŸš€", key: "nav.newScan" },
   // ADDED 2026-09-18: Framework CLI
-  { to: "/v2/framework-scan", icon: "🦅", key: "nav.frameworkScan" },
-  { to: "/v2/profiles",       icon: "👤", key: "nav.profiles" },
-  { to: "/v2/login",          icon: "🔐", key: "nav.login" },
-  { to: "/v2/ai-settings",    icon: "🤖", key: "nav.aiSettings" },
-  { to: "/v2/findings",  icon: "🎯", key: "nav.findings" },
-  { to: "/v2/reports",   icon: "📄", key: "nav.reports" },
-   { to: "/v2/live-session", icon: "👁️", key: "nav.liveSession" },
-  { to: "/v2/monitor",   icon: "📡", key: "nav.liveMonitor" },
+  { to: "/v2/framework-scan", icon: "ðŸ¦…", key: "nav.frameworkScan" },
+  { to: "/v2/profiles",       icon: "ðŸ‘¤", key: "nav.profiles" },
+  { to: "/v2/login",          icon: "ðŸ”", key: "nav.login" },
+  { to: "/v2/ai-settings",    icon: "ðŸ¤–", key: "nav.aiSettings" },
+  { to: "/v2/findings",  icon: "ðŸŽ¯", key: "nav.findings" },
+  { to: "/v2/reports",   icon: "ðŸ“„", key: "nav.reports" },
+   { to: "/v2/live-session", icon: "ðŸ‘ï¸", key: "nav.liveSession" },
+  { to: "/v2/monitor",   icon: "ðŸ“¡", key: "nav.liveMonitor" },
 ]
 
 export default function TacticalSidebar() {
@@ -91,7 +91,7 @@ export default function TacticalSidebar() {
             className="text-[10px]"
             style={{ color: "var(--accent-green)" }}
           >
-            ● {isRtl ? "متصل" : "Online"}
+            â— {isRtl ? "Ù…ØªØµÙ„" : "Online"}
           </div>
         </div>
       </div>
@@ -145,14 +145,14 @@ export default function TacticalSidebar() {
           onMouseEnter={e => e.currentTarget.style.background = "rgba(239, 68, 68, 0.1)"}
           onMouseLeave={e => e.currentTarget.style.background = "transparent"}
         >
-          <span className="text-base">🚪</span>
-          <span className="font-medium">{isRtl ? "تسجيل خروج" : "Logout"}</span>
+          <span className="text-base">ðŸšª</span>
+          <span className="font-medium">{isRtl ? "ØªØ³Ø¬ÙŠÙ„ Ø®Ø±ÙˆØ¬" : "Logout"}</span>
         </button>
         <div
           className="text-[10px] font-mono px-3"
           style={{ color: "var(--text-muted)" }}
         >
-          v2.0.0 · {new Date().getFullYear()}
+          v2.0.0 Â· {new Date().getFullYear()}
         </div>
       </div>
     </aside>

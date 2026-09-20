@@ -184,7 +184,8 @@
     "reports": "التقارير",
     "liveMonitor": "المراقبة",
     "liveSession": "المتصفح المباشر",
-    "logout": "تسجيل خروج"
+    "logout": "تسجيل خروج",
+    "aiAssistant": "المساعد الذكي"
   },
   "frameworkScan": {
     "title": "فحص Framework",

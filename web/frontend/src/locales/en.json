@@ -184,7 +184,8 @@
     "reports": "Reports",
     "liveMonitor": "Live Monitor",
     "liveSession": "Live Browser",
-    "logout": "Logout"
+    "logout": "Logout",
+    "aiAssistant": "AI Assistant"
   },
   "frameworkScan": {
     "title": "Framework Scan",

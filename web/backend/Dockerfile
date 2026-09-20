@@ -12,6 +12,7 @@ ENV PYTHONUNBUFFERED=1 \
 
 WORKDIR /app
 
+
 # --- System dependencies (with exploitdb, nmap, testssl deps) ---
 RUN apt-get update -o Acquire::Retries=5 && \
     apt-get install -y --no-install-recommends \
@@ -28,9 +29,16 @@ RUN apt-get update -o Acquire::Retries=5 && \
     && rm -rf /var/lib/apt/lists/*
 
 # --- searchsploit (exploitdb) — installed via git (not in Debian Trixie repos) ---
-RUN git clone --depth 1 https://gitlab.com/exploit-database/exploitdb.git /opt/exploitdb \
-    && ln -sf /opt/exploitdb/searchsploit /usr/local/bin/searchsploit \
-    && chmod +x /opt/exploitdb/searchsploit
+RUN (git clone --depth 1 https://github.com/offensive-security/exploitdb.git /opt/exploitdb \
+    || git clone --depth 1 https://gitlab.com/exploit-database/exploitdb.git /opt/exploitdb \
+    || true) \
+    && if [ -f /opt/exploitdb/searchsploit ]; then \
+        ln -sf /opt/exploitdb/searchsploit /usr/local/bin/searchsploit \
+        && chmod +x /opt/exploitdb/searchsploit; \
+    else \
+        echo "#!/bin/bash\necho 'searchsploit not available'; exit 1" > /usr/local/bin/searchsploit \
+        && chmod +x /usr/local/bin/searchsploit; \
+    fi
 
 # --- Python dependencies ---
 COPY requirements.txt .

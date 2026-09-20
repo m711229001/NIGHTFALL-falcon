@@ -300,5 +300,10 @@ reports/
 cd
 git
 
+# Junk from CMD paste accidents (patterns)
+a.finding_id
+res.ok
+setAiLoading*
+
 # Test outputs
 test_output/

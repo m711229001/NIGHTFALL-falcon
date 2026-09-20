@@ -1148,6 +1148,119 @@ def get_latest_endpoint_catalog() -> Optional[dict]:
     return None
 
 
+def get_dashboard_stats() -> dict:
+    """Aggregate stats from all scan outputs (last 30 days)."""
+    import glob
+    from datetime import datetime, timedelta
+
+    files = glob.glob(str(OUTPUT_DIR / "scan_*.json"))
+    files = [f for f in files if "_triage" not in f]
+
+    now = datetime.now()
+    cutoff = now - timedelta(days=30)
+
+    stats = {
+        "total_scans": 0,
+        "scans_today": 0,
+        "scans_7d": 0,
+        "by_severity": {"critical": 0, "high": 0, "medium": 0, "low": 0, "info": 0},
+        "by_target": {},
+        "ai_analyzed_total": 0,
+        "bugbounty_worthy_total": 0,
+        "timeline": {},  # date -> count
+        "recent_scans": [],  # last 10
+        "top_targets": [],
+    }
+
+    for f in sorted(files, key=lambda p: os.path.getmtime(p), reverse=True):
+        try:
+            with open(f, encoding="utf-8") as fh:
+                data = json.load(fh)
+        except Exception:
+            continue
+
+        scan_date_str = data.get("scan_date", "")
+        try:
+            scan_dt = datetime.fromisoformat(scan_date_str.replace("Z", "+00:00").replace("+00:00", ""))
+        except Exception:
+            scan_dt = None
+
+        if scan_dt and scan_dt < cutoff:
+            continue
+
+        stats["total_scans"] += 1
+
+        if scan_dt:
+            if scan_dt.date() == now.date():
+                stats["scans_today"] += 1
+            if (now - scan_dt).days <= 7:
+                stats["scans_7d"] += 1
+            day_key = scan_dt.strftime("%Y-%m-%d")
+            stats["timeline"][day_key] = stats["timeline"].get(day_key, 0) + 1
+
+        target = data.get("target", "")
+        if target:
+            stats["by_target"][target] = stats["by_target"].get(target, 0) + 1
+
+        # Count findings by severity
+        findings = data.get("findings", []) or []
+        for fnd in findings:
+            sev = (fnd.get("severity") or "info").lower()
+            if sev in stats["by_severity"]:
+                stats["by_severity"][sev] += 1
+
+        # AI count
+        enriched = data.get("_ai_enriched", []) or []
+        stats["ai_analyzed_total"] += len(enriched)
+
+        # Add to recent (only if we have findings)
+        if len(stats["recent_scans"]) < 10:
+            stats["recent_scans"].append({
+                "scan_id": os.path.basename(f).replace(".json", ""),
+                "target": target,
+                "date": scan_date_str[:19],
+                "findings": len(findings),
+                "severity": stats["by_severity"],
+                "has_ai": len(enriched) > 0,
+            })
+
+    # Top 5 targets
+    sorted_targets = sorted(stats["by_target"].items(), key=lambda x: -x[1])[:5]
+    stats["top_targets"] = [{"target": t, "count": c} for t, c in sorted_targets]
+
+    # Bug bounty worthy (from triage files)
+    triage_files = glob.glob(str(OUTPUT_DIR / "scan_*_triage.json"))
+    for tf in triage_files[-20:]:
+        try:
+            with open(tf, encoding="utf-8") as fh:
+                tdata = json.load(fh)
+            items = tdata.get("items", []) or []
+            for item in items:
+                if item.get("_triage", {}).get("bugbounty_worthy"):
+                    stats["bugbounty_worthy_total"] += 1
+        except Exception:
+            continue
+
+    return stats
+
+
+def get_latest_triage() -> Optional[dict]:
+    """Return the latest *_triage.json file."""
+    import glob
+    files = sorted(
+        glob.glob(str(OUTPUT_DIR / "scan_*_triage.json")),
+        key=os.path.getmtime, reverse=True,
+    )
+    if not files:
+        return None
+    try:
+        with open(files[0], encoding="utf-8") as fh:
+            data = json.load(fh)
+        return data
+    except Exception:
+        return None
+
+
 def get_endpoint_catalog(scan_id: str) -> Optional[dict]:
     """Return endpoint catalog for a scan (from output JSON)."""
     state = _get(scan_id)

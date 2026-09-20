@@ -166,6 +166,19 @@ async def get_report_v2(scan_id: str, user: dict = Depends(get_current_user)):
     return data
 
 
+@router.get("/dashboard-stats")
+async def dashboard_stats_v2(user: dict = Depends(get_current_user)):
+    return cli_runner.get_dashboard_stats()
+
+
+@router.get("/triage-latest")
+async def get_triage_latest_v2(user: dict = Depends(get_current_user)):
+    data = cli_runner.get_latest_triage()
+    if data is None:
+        return {"triaged": 0, "items": []}
+    return data
+
+
 @router.get("/links-latest")
 async def get_links_latest_v2(user: dict = Depends(get_current_user)):
     """Return endpoint catalog from the most recent scan (no scan_id)."""

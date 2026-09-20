@@ -1,300 +1,338 @@
 /**
- * DashboardV2 - Tactical Cinematic Hybrid
+ * DashboardV2 - Enhanced with KPI + Charts + AI Summary
  */
-import { useState, useEffect } from "react"
+import { useEffect, useState } from "react"
 import { useTranslation } from "react-i18next"
-import {
-  AreaChart, Area, PieChart, Pie, Cell,
-  XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Legend
-} from "recharts"
-
+import { useNavigate } from "react-router-dom"
+import { PieChart, Pie, Cell, ResponsiveContainer, LineChart, Line,
+         XAxis, YAxis, Tooltip, BarChart, Bar } from "recharts"
 import TacticalSidebar from "../components/TacticalSidebar"
 import TopHeader from "../components/TopHeader"
-import KPICard from "../components/KPICard"
-import FindingsDrawer from "../components/FindingsDrawer"
-import client from "../../api/client"
+import { frameworkScanApi } from "../../api/clientV2"
+import { Icon } from "../components/Icons"
 
 const SEV_COLORS = {
-  critical: "#EF4444",
-  high:     "#F97316",
-  medium:   "#FACC15",
-  low:      "#10B981",
-  info:     "#06B6D4",
+    critical: "#dc2626",
+    high:     "#ea580c",
+    medium:   "#ca8a04",
+    low:      "#16a34a",
+    info:     "#2563eb",
+}
+
+function KPICard({ icon, label, value, sub, color, onClick }) {
+    return (
+        <button onClick={onClick}
+            className="rounded-xl p-4 text-start transition-all hover-lift"
+            style={{
+                background: "var(--bg-secondary)",
+                border: "1px solid var(--border-color)",
+                cursor: onClick ? "pointer" : "default",
+            }}>
+            <div className="flex items-center justify-between mb-2">
+                <div className="text-xs font-bold uppercase tracking-wider"
+                    style={{ color: "var(--text-muted)" }}>
+                    {label}
+                </div>
+                <Icon name={icon} size={18} style={{ color }} />
+            </div>
+            <div className="text-3xl font-bold font-mono" style={{ color }}>
+                {value}
+            </div>
+            {sub && (
+                <div className="text-[11px] mt-1" style={{ color: "var(--text-muted)" }}>
+                    {sub}
+                </div>
+            )}
+        </button>
+    )
+}
+
+function Timeline({ data }) {
+    const sorted = Object.entries(data || {})
+        .sort()
+        .slice(-14)
+        .map(([date, count]) => ({
+            day: date.slice(5),
+            count,
+        }))
+
+    if (sorted.length === 0) {
+        return <div className="text-xs text-center py-8" style={{ color: "var(--text-muted)" }}>No data</div>
+    }
+
+    return (
+        <ResponsiveContainer width="100%" height={180}>
+            <LineChart data={sorted}>
+                <XAxis dataKey="day" tick={{ fontSize: 10, fill: "var(--text-muted)" }} />
+                <YAxis tick={{ fontSize: 10, fill: "var(--text-muted)" }} allowDecimals={false} />
+                <Tooltip contentStyle={{
+                    background: "var(--bg-elevated)",
+                    border: "1px solid var(--border-color)",
+                    fontSize: 12,
+                }} />
+                <Line type="monotone" dataKey="count" stroke="var(--accent-cyan)"
+                    strokeWidth={2} dot={{ r: 3 }} />
+            </LineChart>
+        </ResponsiveContainer>
+    )
+}
+
+function SeverityPie({ data }) {
+    const pieData = Object.entries(data || {})
+        .filter(([_, v]) => v > 0)
+        .map(([k, v]) => ({ name: k, value: v, color: SEV_COLORS[k] }))
+
+    if (pieData.length === 0) {
+        return <div className="text-xs text-center py-8" style={{ color: "var(--text-muted)" }}>No findings yet</div>
+    }
+
+    return (
+        <div className="flex items-center gap-4">
+            <ResponsiveContainer width={120} height={120}>
+                <PieChart>
+                    <Pie data={pieData} innerRadius={30} outerRadius={55} dataKey="value">
+                        {pieData.map((e, i) => <Cell key={i} fill={e.color} />)}
+                    </Pie>
+                </PieChart>
+            </ResponsiveContainer>
+            <div className="text-xs space-y-1 flex-1">
+                {pieData.map((d) => (
+                    <div key={d.name} className="flex justify-between items-center">
+                        <span style={{ color: d.color }} className="font-bold uppercase">{d.name}</span>
+                        <span className="font-mono">{d.value}</span>
+                    </div>
+                ))}
+            </div>
+        </div>
+    )
+}
+
+function TopTargets({ data }) {
+    if (!data || data.length === 0) {
+        return <div className="text-xs text-center py-8" style={{ color: "var(--text-muted)" }}>No targets</div>
+    }
+
+    return (
+        <ResponsiveContainer width="100%" height={180}>
+            <BarChart data={data} layout="vertical" margin={{ left: 20 }}>
+                <XAxis type="number" tick={{ fontSize: 10, fill: "var(--text-muted)" }} allowDecimals={false} />
+                <YAxis type="category" dataKey="target" width={150}
+                    tick={{ fontSize: 9, fill: "var(--text-muted)" }}
+                    tickFormatter={(v) => v.length > 25 ? v.slice(0, 25) + "…" : v} />
+                <Tooltip contentStyle={{
+                    background: "var(--bg-elevated)",
+                    border: "1px solid var(--border-color)",
+                    fontSize: 11,
+                }} />
+                <Bar dataKey="count" fill="var(--accent-purple)" radius={[0, 4, 4, 0]} />
+            </BarChart>
+        </ResponsiveContainer>
+    )
 }
 
 export default function DashboardV2() {
-  const { t } = useTranslation()
+    const { t, i18n } = useTranslation()
+    const isRtl = i18n.language === "ar"
+    const navigate = useNavigate()
+    const [stats, setStats] = useState(null)
+    const [loading, setLoading] = useState(true)
 
-  const [stats, setStats] = useState({ total: 0, critical: 0, medium: 0, resolved: 0 })
-  const [findings, setFindings] = useState([])
-  const [loading, setLoading] = useState(true)
-  const [selected, setSelected] = useState(null)
-  const [threatData, setThreatData] = useState([])
-  const [distData, setDistData] = useState([])
-
-  useEffect(() => {
-    async function fetchData() {
-      try {
-        // 1) Scans list — correct endpoint: /api/scans/list
-        let scanList = []
-        try {
-          const scansRes = await client.get("/api/scans/list", { params: { limit: 50 } })
-          const data = scansRes.data
-          scanList = Array.isArray(data) ? data : (data.scans || [])
-        } catch (e) {
-          console.warn("Could not fetch scans list:", e?.response?.status)
+    useEffect(() => {
+        let active = true
+        const load = async () => {
+            try {
+                const r = await frameworkScanApi.dashboardStats()
+                if (active) setStats(r.data)
+            } catch (e) {
+                if (active) console.error(e)
+            } finally {
+                if (active) setLoading(false)
+            }
         }
+        load()
+        const id = setInterval(load, 30000)
+        return () => { active = false; clearInterval(id) }
+    }, [])
 
-        // 2) Findings — /api/findings
-        let findList = []
-        try {
-          const findRes = await client.get("/api/findings", { params: { limit: 200 } })
-          const data = findRes.data
-          findList = Array.isArray(data) ? data : (data.findings || [])
-        } catch (e) {
-          console.warn("Could not fetch findings:", e?.response?.status)
-        }
+    const s = stats || {}
+    const totalFindings = Object.values(s.by_severity || {}).reduce((a, b) => a + b, 0)
 
-        setFindings(findList)
+    return (
+        <div className="flex min-h-screen" style={{ background: "var(--bg-primary)", color: "var(--text-primary)" }}>
+            <TacticalSidebar />
+            <div className="flex-1 flex flex-col min-w-0">
+                <TopHeader />
+                <main className="flex-1 p-6 overflow-x-hidden space-y-6">
 
-        // 3) Compute stats
-        const crit = findList.filter(f => (f.severity || "").toLowerCase() === "critical").length
-        const med = findList.filter(f => (f.severity || "").toLowerCase() === "medium").length
-        setStats({
-          total: scanList.length,
-          critical: crit,
-          medium: med,
-          resolved: 0,
-        })
+                    {/* Header */}
+                    <div className="flex items-center gap-3">
+                        <h1 className="text-3xl font-bold flex items-center gap-3"
+                            style={{ color: "var(--accent-red)" }}>
+                            <Icon name="dashboard" size={28} />
+                            {isRtl ? "لوحة التحكم" : "Dashboard"}
+                        </h1>
+                        {s.scans_today > 0 && (
+                            <span className="px-3 py-1 rounded-lg text-xs font-bold"
+                                style={{ background: "var(--accent-green-soft)", color: "var(--accent-green)", border: "1px solid var(--accent-green)" }}>
+                                +{s.scans_today} {isRtl ? "اليوم" : "today"}
+                            </span>
+                        )}
+                    </div>
 
-        // 4) Threat frequency chart — last 10 scans
-        const recent = scanList.slice(-10).map((s, i) => ({
-          name: `#${s.id || i + 1}`,
-          findings: s.findings_count || (Array.isArray(s.findings) ? s.findings.length : 0),
-          requests: s.requests_used || s.requests || 0,
-        }))
-        setThreatData(recent.length > 0 ? recent : [
-          { name: "#1", findings: 0, requests: 0 },
-        ])
+                    {loading ? (
+                        <div className="p-12 text-center">
+                            <Icon name="refresh" size={32} className="anim-spin mx-auto mb-2" />
+                            <div className="text-sm" style={{ color: "var(--text-muted)" }}>Loading stats...</div>
+                        </div>
+                    ) : (
+                        <>
+                            {/* KPI Cards */}
+                            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
+                                <KPICard
+                                    icon="scan"
+                                    label={isRtl ? "إجمالي الفحوصات" : "Total Scans"}
+                                    value={s.total_scans || 0}
+                                    sub={`${s.scans_7d || 0} ${isRtl ? "آخر 7 أيام" : "in last 7d"}`}
+                                    color="var(--accent-red)"
+                                    onClick={() => navigate("/v2/framework-scan")} />
+                                <KPICard
+                                    icon="findings"
+                                    label={isRtl ? "إجمالي الثغرات" : "Total Findings"}
+                                    value={totalFindings}
+                                    sub={`${s.by_severity?.critical || 0} critical · ${s.by_severity?.high || 0} high`}
+                                    color="var(--accent-orange)"
+                                    onClick={() => navigate("/v2/findings")} />
+                                <KPICard
+                                    icon="sparkles"
+                                    label={isRtl ? "حلّلها AI" : "AI Analyzed"}
+                                    value={s.ai_analyzed_total || 0}
+                                    sub={isRtl ? "findings مع تحليل" : "findings with analysis"}
+                                    color="var(--accent-purple)"
+                                    onClick={() => navigate("/v2/ai-settings")} />
+                                <KPICard
+                                    icon="star"
+                                    label={isRtl ? "قابل للنشر" : "Bug Bounty Worthy"}
+                                    value={s.bugbounty_worthy_total || 0}
+                                    sub={isRtl ? "من التصنيف الذكي" : "from AI triage"}
+                                    color="var(--accent-green)"
+                                    onClick={() => navigate("/v2/triage")} />
+                            </div>
 
-        // 5) Distribution donut
-        const dist = [
-          { name: "Critical", value: crit, color: SEV_COLORS.critical },
-          { name: "High", value: findList.filter(f => (f.severity || "").toLowerCase() === "high").length, color: SEV_COLORS.high },
-          { name: "Medium", value: med, color: SEV_COLORS.medium },
-          { name: "Low", value: findList.filter(f => (f.severity || "").toLowerCase() === "low").length, color: SEV_COLORS.low },
-        ].filter(d => d.value > 0)
-        setDistData(dist)
-      } catch (e) {
-        console.error("Dashboard fetch error:", e)
-      } finally {
-        setLoading(false)
-      }
-    }
-    fetchData()
-  }, [])
+                            {/* Charts Row 1 */}
+                            <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
+                                <div className="lg:col-span-2 rounded-xl p-4"
+                                    style={{ background: "var(--bg-secondary)", border: "1px solid var(--border-color)" }}>
+                                    <div className="text-xs font-bold mb-3 uppercase tracking-wider flex items-center gap-2"
+                                        style={{ color: "var(--text-muted)" }}>
+                                        <Icon name="trendUp" size={14} />
+                                        {isRtl ? "النشاط (آخر 14 يوم)" : "Scan Activity (14d)"}
+                                    </div>
+                                    <Timeline data={s.timeline} />
+                                </div>
+                                <div className="rounded-xl p-4"
+                                    style={{ background: "var(--bg-secondary)", border: "1px solid var(--border-color)" }}>
+                                    <div className="text-xs font-bold mb-3 uppercase tracking-wider flex items-center gap-2"
+                                        style={{ color: "var(--text-muted)" }}>
+                                        <Icon name="pieChart" size={14} />
+                                        {isRtl ? "حسب الخطورة" : "By Severity"}
+                                    </div>
+                                    <SeverityPie data={s.by_severity} />
+                                </div>
+                            </div>
 
-  return (
-    <div
-      className="flex min-h-screen transition-colors"
-      style={{ background: "var(--bg-primary)", color: "var(--text-primary)" }}
-    >
-      <TacticalSidebar />
+                            {/* Charts Row 2 */}
+                            <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+                                <div className="rounded-xl p-4"
+                                    style={{ background: "var(--bg-secondary)", border: "1px solid var(--border-color)" }}>
+                                    <div className="text-xs font-bold mb-3 uppercase tracking-wider flex items-center gap-2"
+                                        style={{ color: "var(--text-muted)" }}>
+                                        <Icon name="target" size={14} />
+                                        {isRtl ? "أعلى الأهداف" : "Top Targets"}
+                                    </div>
+                                    <TopTargets data={s.top_targets} />
+                                </div>
 
-      <div className="flex-1 flex flex-col min-w-0">
-        <TopHeader />
+                                <div className="rounded-xl p-4"
+                                    style={{ background: "var(--bg-secondary)", border: "1px solid var(--border-color)" }}>
+                                    <div className="text-xs font-bold mb-3 uppercase tracking-wider flex items-center gap-2"
+                                        style={{ color: "var(--text-muted)" }}>
+                                        <Icon name="clock" size={14} />
+                                        {isRtl ? "آخر الفحوصات" : "Recent Scans"}
+                                    </div>
+                                    <div className="space-y-2 max-h-[200px] overflow-y-auto">
+                                        {(s.recent_scans || []).map((scan, i) => (
+                                            <div key={i} className="flex items-center justify-between gap-2 py-2 px-3 rounded"
+                                                style={{ background: "var(--bg-tertiary)" }}>
+                                                <div className="min-w-0 flex-1">
+                                                    <div className="text-xs font-mono truncate" style={{ color: "var(--text-primary)" }}>
+                                                        {scan.target}
+                                                    </div>
+                                                    <div className="text-[10px]" style={{ color: "var(--text-muted)" }}>
+                                                        {scan.date}
+                                                    </div>
+                                                </div>
+                                                <div className="text-xs font-bold px-2 py-0.5 rounded"
+                                                    style={{
+                                                        background: scan.findings > 0 ? "var(--accent-red-soft)" : "var(--bg-elevated)",
+                                                        color: scan.findings > 0 ? "var(--accent-red)" : "var(--text-muted)",
+                                                    }}>
+                                                    {scan.findings}
+                                                </div>
+                                            </div>
+                                        ))}
+                                        {(!s.recent_scans || s.recent_scans.length === 0) && (
+                                            <div className="text-xs text-center py-8" style={{ color: "var(--text-muted)" }}>
+                                                {isRtl ? "لا فحوصات بعد" : "No scans yet"}
+                                            </div>
+                                        )}
+                                    </div>
+                                </div>
+                            </div>
 
-        <main className="flex-1 p-6 space-y-6 overflow-x-hidden">
-          <section>
-            <h2
-              className="text-2xl font-bold mb-4 font-mono"
-              style={{ color: "var(--accent-red)" }}
-            >
-              {t("dashboardV2.title")}
-            </h2>
-            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
-              <KPICard icon="🎯" label={t("kpi.totalScans")} value={stats.total} subtext={t("kpi.scanUnits")} color="slate" />
-              <KPICard icon="🔴" label={t("kpi.critical")} value={stats.critical} subtext={t("kpi.needsAction")} color="critical" />
-              <KPICard icon="🟡" label={t("kpi.medium")} value={stats.medium} subtext={t("kpi.monitor")} color="medium" />
-              <KPICard icon="🟢" label={t("kpi.resolved")} value={stats.resolved} subtext={t("kpi.allClear")} color="low" />
+                            {/* Quick Actions */}
+                            <div className="rounded-xl p-4"
+                                style={{ background: "var(--bg-secondary)", border: "1px solid var(--border-color)" }}>
+                                <div className="text-xs font-bold mb-3 uppercase tracking-wider"
+                                    style={{ color: "var(--text-muted)" }}>
+                                    ⚡ {isRtl ? "إجراءات سريعة" : "Quick Actions"}
+                                </div>
+                                <div className="flex flex-wrap gap-3">
+                                    <button onClick={() => navigate("/v2/framework-scan")}
+                                        className="px-4 py-2 rounded-lg text-sm font-bold flex items-center gap-2 hover-lift"
+                                        style={{ background: "var(--accent-red)", color: "white", cursor: "pointer" }}>
+                                        <Icon name="scan" size={16} />
+                                        {isRtl ? "فحص جديد" : "New Scan"}
+                                    </button>
+                                    <button onClick={() => navigate("/v2/findings")}
+                                        className="px-4 py-2 rounded-lg text-sm font-bold flex items-center gap-2 hover-lift"
+                                        style={{ background: "var(--bg-tertiary)", color: "var(--text-primary)", border: "1px solid var(--border-color)", cursor: "pointer" }}>
+                                        <Icon name="findings" size={16} />
+                                        {isRtl ? "عرض الثغرات" : "View Findings"}
+                                    </button>
+                                    <button onClick={() => navigate("/v2/triage")}
+                                        className="px-4 py-2 rounded-lg text-sm font-bold flex items-center gap-2 hover-lift"
+                                        style={{ background: "var(--accent-purple-soft)", color: "var(--accent-purple)", border: "1px solid var(--accent-purple)", cursor: "pointer" }}>
+                                        <Icon name="brain" size={16} />
+                                        {isRtl ? "التحليل الذكي" : "AI Triage"}
+                                    </button>
+                                    <button onClick={() => navigate("/v2/reports")}
+                                        className="px-4 py-2 rounded-lg text-sm font-bold flex items-center gap-2 hover-lift"
+                                        style={{ background: "var(--bg-tertiary)", color: "var(--text-primary)", border: "1px solid var(--border-color)", cursor: "pointer" }}>
+                                        <Icon name="reports" size={16} />
+                                        {isRtl ? "التقارير" : "Reports"}
+                                    </button>
+                                    <button onClick={() => navigate("/v2/links")}
+                                        className="px-4 py-2 rounded-lg text-sm font-bold flex items-center gap-2 hover-lift"
+                                        style={{ background: "var(--bg-tertiary)", color: "var(--text-primary)", border: "1px solid var(--border-color)", cursor: "pointer" }}>
+                                        <Icon name="link" size={16} />
+                                        {isRtl ? "الروابط" : "Links"}
+                                    </button>
+                                </div>
+                            </div>
+                        </>
+                    )}
+                </main>
             </div>
-          </section>
-
-          <section className="grid grid-cols-1 lg:grid-cols-3 gap-4">
-            <div
-              className="lg:col-span-2 rounded-lg p-4"
-              style={{ background: "var(--bg-secondary)", border: "1px solid var(--border-color)" }}
-            >
-              <h3 className="text-sm font-mono uppercase mb-3" style={{ color: "var(--accent-red)" }}>
-                {t("charts.threatFrequency")}
-              </h3>
-              <div className="h-64">
-                <ResponsiveContainer width="100%" height="100%">
-                  <AreaChart data={threatData}>
-                    <defs>
-                      <linearGradient id="threatGrad" x1="0" y1="0" x2="0" y2="1">
-                        <stop offset="5%" stopColor="#EF4444" stopOpacity={0.6}/>
-                        <stop offset="95%" stopColor="#EF4444" stopOpacity={0}/>
-                      </linearGradient>
-                    </defs>
-                    <CartesianGrid stroke="var(--border-color)" strokeDasharray="3 3" />
-                    <XAxis dataKey="name" stroke="var(--text-muted)" fontSize={11} />
-                    <YAxis stroke="var(--text-muted)" fontSize={11} />
-                    <Tooltip
-                      contentStyle={{
-                        background: "var(--bg-elevated)",
-                        border: "1px solid var(--border-color)",
-                        color: "var(--text-primary)",
-                        fontSize: 12,
-                      }}
-                    />
-                    <Area type="monotone" dataKey="findings" stroke="#EF4444" strokeWidth={2} fill="url(#threatGrad)" />
-                  </AreaChart>
-                </ResponsiveContainer>
-              </div>
-            </div>
-
-            <div
-              className="rounded-lg p-4"
-              style={{ background: "var(--bg-secondary)", border: "1px solid var(--border-color)" }}
-            >
-              <h3 className="text-sm font-mono uppercase mb-3" style={{ color: "var(--accent-red)" }}>
-                {t("charts.vulnDistribution")}
-              </h3>
-              <div className="h-64">
-                {distData.length > 0 ? (
-                  <ResponsiveContainer width="100%" height="100%">
-                    <PieChart>
-                      <Pie data={distData} innerRadius={50} outerRadius={80} paddingAngle={3} dataKey="value">
-                        {distData.map((entry, i) => (<Cell key={i} fill={entry.color} />))}
-                      </Pie>
-                      <Tooltip
-                        contentStyle={{
-                          background: "var(--bg-elevated)",
-                          border: "1px solid var(--border-color)",
-                          color: "var(--text-primary)",
-                          fontSize: 12,
-                        }}
-                      />
-                      <Legend wrapperStyle={{ fontSize: 11, color: "var(--text-secondary)" }} />
-                    </PieChart>
-                  </ResponsiveContainer>
-                ) : (
-                  <div
-                    className="h-full flex items-center justify-center text-sm"
-                    style={{ color: "var(--text-muted)" }}
-                  >
-                    {t("charts.noData")}
-                  </div>
-                )}
-              </div>
-            </div>
-          </section>
-
-          <section
-            className="rounded-lg overflow-hidden"
-            style={{ background: "var(--bg-secondary)", border: "1px solid var(--border-color)" }}
-          >
-            <div className="px-4 py-3 border-b" style={{ borderColor: "var(--border-color)" }}>
-              <h3 className="text-sm font-mono uppercase" style={{ color: "var(--accent-red)" }}>
-                {t("table.recentFindings")}
-              </h3>
-            </div>
-            <div className="overflow-x-auto">
-              <table className="w-full text-sm">
-                <thead
-                  className="text-xs uppercase"
-                  style={{ background: "var(--bg-tertiary)", color: "var(--text-muted)" }}
-                >
-                  <tr>
-                    <th className="px-3 py-2 text-start">{t("table.severity")}</th>
-                    <th className="px-3 py-2 text-start">{t("table.name")}</th>
-                    <th className="px-3 py-2 text-start">{t("table.target")}</th>
-                    <th className="px-3 py-2 text-start">{t("table.date")}</th>
-                    <th className="px-3 py-2 text-end">{t("table.actions")}</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {findings.slice(0, 10).map((f, i) => {
-                    const sev = (f.severity || "info").toLowerCase()
-                    const sevColor = SEV_COLORS[sev] || SEV_COLORS.info
-                    return (
-                      <tr
-                        key={i}
-                        className="transition-colors"
-                        style={{ borderTop: "1px solid var(--border-color)" }}
-                        onMouseEnter={e => e.currentTarget.style.background = "var(--bg-tertiary)"}
-                        onMouseLeave={e => e.currentTarget.style.background = "transparent"}
-                      >
-                        <td className="px-3 py-2">
-                          <span
-                            className="inline-block px-2 py-0.5 rounded text-[10px] font-bold uppercase"
-                            style={{
-                              color: sevColor,
-                              border: `1px solid ${sevColor}`,
-                              background: `${sevColor}20`,
-                            }}
-                          >
-                            {sev}
-                          </span>
-                        </td>
-                        <td className="px-3 py-2" style={{ color: "var(--text-primary)" }}>
-                          {f.vuln_class || f.title || f.category || "—"}
-                        </td>
-                        <td
-                          className="px-3 py-2 font-mono text-xs max-w-[300px] truncate"
-                          style={{ color: "var(--accent-cyan)" }}
-                        >
-                          {f.url || "—"}
-                        </td>
-                        <td className="px-3 py-2 text-xs" style={{ color: "var(--text-muted)" }}>
-                          {f.timestamp ? new Date(f.timestamp).toLocaleDateString() : "—"}
-                        </td>
-                        <td className="px-3 py-2 text-end">
-                          <button
-                            onClick={() => setSelected(f)}
-                            className="px-3 py-1 rounded text-xs font-semibold"
-                            style={{
-                              background: "rgba(127, 29, 29, 0.4)",
-                              color: "var(--accent-red)",
-                            }}
-                          >
-                            {t("table.viewDetails")}
-                          </button>
-                        </td>
-                      </tr>
-                    )
-                  })}
-                  {findings.length === 0 && !loading && (
-                    <tr>
-                      <td
-                        colSpan="5"
-                        className="px-3 py-8 text-center"
-                        style={{ color: "var(--text-muted)" }}
-                      >
-                        {t("table.noFindings")}
-                      </td>
-                    </tr>
-                  )}
-                  {loading && (
-                    <tr>
-                      <td
-                        colSpan="5"
-                        className="px-3 py-8 text-center"
-                        style={{ color: "var(--text-muted)" }}
-                      >
-                        {t("common.loading")}
-                      </td>
-                    </tr>
-                  )}
-                </tbody>
-              </table>
-            </div>
-          </section>
-        </main>
-      </div>
-
-      {selected && <FindingsDrawer finding={selected} onClose={() => setSelected(null)} />}
-    </div>
-  )
+        </div>
+    )
 }

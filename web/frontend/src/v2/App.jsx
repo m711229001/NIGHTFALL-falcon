@@ -18,6 +18,7 @@ import ProfilesV2 from "./pages/ProfilesV2"
 import LoginV2 from "./pages/LoginV2"
 import AISettingsV2 from "./pages/AISettingsV2"
 import LinksV2 from "./pages/LinksV2"
+import TriageV2 from "./pages/TriageV2"
 
 export default function AppV2() {
   return (
@@ -31,6 +32,7 @@ export default function AppV2() {
         <Route path="new-scan" element={<NewScanV2 />} />
         <Route path="findings" element={<FindingsV2 />} />
         <Route path="links" element={<LinksV2 />} />
+        <Route path="triage" element={<TriageV2 />} />
         <Route path="reports" element={<ReportsV2 />} />
         <Route path="monitor" element={<LiveMonitorV2 />} />
         <Route path="scans/:id" element={<ScanDetailsV2 />} />

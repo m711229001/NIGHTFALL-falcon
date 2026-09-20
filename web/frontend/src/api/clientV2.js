@@ -45,6 +45,8 @@ export const frameworkScanApi = {
   report:       (scanId)              => clientV2.get(`/api/v2/scans/report/${scanId}`),
   links:        (scanId)              => clientV2.get(`/api/v2/scans/links/${scanId}`),
   linksLatest:  ()                    => clientV2.get("/api/v2/scans/links-latest"),
+  triageLatest: ()                    => clientV2.get("/api/v2/scans/triage-latest"),
+  dashboardStats: ()                  => clientV2.get("/api/v2/scans/dashboard-stats"),
   list:         ()                    => clientV2.get("/api/v2/scans/list"),
   diagnose:     ()                    => clientV2.get("/api/v2/scans/diagnose"),
 };

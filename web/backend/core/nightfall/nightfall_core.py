@@ -604,6 +604,198 @@ class HttpPool:
         }
 
 
+async def test_fingerprint_advanced(pool, target):
+    """Advanced fingerprinting: Server, Language, Framework, CMS,
+    DB hints, JS libraries, security headers, cookies, WAF, meta tags."""
+    import re as _re
+    result = {
+        "target": target, "server": "", "powered_by": "",
+        "language": "", "framework": "", "cms": "",
+        "js_libs": [], "db_hints": [], "security_headers": {},
+        "missing_headers": [], "cookies": [], "waf": None,
+        "meta_tags": {}, "technologies": [], "all_technologies": [],
+    }
+    resp = await pool.send("GET", target)
+    if not resp or resp.status == 0:
+        result["error"] = "unreachable"
+        return result
+    headers_lower = {k.lower(): (v or "") for k, v in (resp.headers or {}).items()}
+    body = (resp.text or "")
+    body_lower = body.lower()
+
+    # Server
+    server_hdr = headers_lower.get("server", "")
+    result["server"] = server_hdr
+    sl = server_hdr.lower()
+    if "apache" in sl: result["technologies"].append("Apache")
+    if "nginx" in sl: result["technologies"].append("Nginx")
+    if "iis" in sl: result["technologies"].append("IIS")
+    if "litespeed" in sl: result["technologies"].append("LiteSpeed")
+    if "caddy" in sl: result["technologies"].append("Caddy")
+    if "gunicorn" in sl: result["technologies"].append("Gunicorn")
+    if "uvicorn" in sl: result["technologies"].append("Uvicorn")
+
+    # Powered-By
+    pb = headers_lower.get("x-powered-by", "")
+    result["powered_by"] = pb
+    pbl = pb.lower()
+    if "php" in pbl: result["language"] = "PHP"
+    if "asp.net" in pbl: result["language"] = "ASP.NET"
+    if "express" in pbl: result["framework"] = "Express"
+
+    # WAF
+    waf_hdrs = {
+        "cf-ray": "Cloudflare",
+        "x-akamai-transformed": "Akamai",
+        "x-amz-cf-id": "AWS CloudFront",
+        "x-sucuri-id": "Sucuri",
+        "x-iinfo": "Imperva",
+        "x-wa-info": "F5 BIG-IP",
+    }
+    for h, waf in waf_hdrs.items():
+        if h in headers_lower:
+            result["waf"] = waf
+            result["technologies"].append(waf)
+            break
+
+    # CMS detection
+    cms_patterns = {
+        "WordPress": ["/wp-content/", "/wp-includes/", "wp-json"],
+        "Joomla": ["/components/com_", "joomla"],
+        "Drupal": ["drupalsettings", "/sites/default/files/", "drupal"],
+        "Magento": ["mage/cookies", "/static/version", "magento"],
+        "Shopify": ["cdn.shopify.com", "shopify"],
+        "Wix": ["static.wixstatic.com", "wix.com"],
+        "Squarespace": ["static1.squarespace.com", "squarespace"],
+        "Ghost": ["ghost.org", "ghost-"],
+    }
+    for cms, patterns in cms_patterns.items():
+        if any(p in body_lower for p in patterns):
+            result["cms"] = cms
+            result["technologies"].append(cms)
+            break
+
+    # Framework
+    fw_patterns = {
+        "Next.js": ["/_next/", "__next_data__"],
+        "Nuxt": ["/_nuxt/", "__nuxt"],
+        "React": ["react-dom", "_reactroot"],
+        "Vue": ["vue.js", "vue.min.js", "data-v-"],
+        "Angular": ["ng-version", "angular"],
+        "Svelte": ["svelte-"],
+        "Django": ["csrfmiddlewaretoken", "__admin_media_prefix__"],
+        "Laravel": ["laravel_session", "xsrf-token"],
+        "Rails": ["csrf-param", "rails-"],
+        "Spring": ["jsessionid", "whitelabel error"],
+    }
+    for fw, patterns in fw_patterns.items():
+        if any(p in body_lower for p in patterns):
+            if not result["framework"]:
+                result["framework"] = fw
+            result["technologies"].append(fw)
+            break
+
+    # Language inference
+    if not result["language"]:
+        if "php" in body_lower or "phpsessid" in str(headers_lower):
+            result["language"] = "PHP"
+        elif "jsessionid" in str(headers_lower):
+            result["language"] = "Java"
+        elif "werkzeug" in sl or "python" in str(headers_lower):
+            result["language"] = "Python"
+        elif "asp.net" in str(headers_lower):
+            result["language"] = "ASP.NET"
+        elif "express" in str(headers_lower) or "node" in str(headers_lower):
+            result["language"] = "Node.js"
+    if result["language"]:
+        result["technologies"].append(result["language"])
+
+    # JS libraries
+    js_libs_patterns = {
+        "jQuery": ["jquery"],
+        "React": ["react."],
+        "Vue.js": ["vue."],
+        "Angular": ["angular."],
+        "Bootstrap": ["bootstrap."],
+        "Tailwind": ["tailwind"],
+        "Alpine.js": ["alpine"],
+        "HTMX": ["htmx"],
+        "Lodash": ["lodash"],
+        "Moment.js": ["moment."],
+    }
+    for lib, patterns in js_libs_patterns.items():
+        if any(p in body_lower for p in patterns):
+            result["js_libs"].append(lib)
+            result["technologies"].append(lib)
+
+    # DB hints
+    db_patterns = {
+        "MySQL": ["mysql", "mysqli"],
+        "PostgreSQL": ["postgresql", "pg_query", "sqlstate"],
+        "MSSQL": ["microsoft sql server", "odbc sql server", "sqlserver"],
+        "Oracle": ["oracle"],
+        "MongoDB": ["mongodb", "mongo error", "bson"],
+        "SQLite": ["sqlite"],
+        "Redis": ["redis"],
+    }
+    for db, patterns in db_patterns.items():
+        if any(p in body_lower for p in patterns):
+            result["db_hints"].append(db)
+
+    # Security headers
+    security_headers = [
+        "content-security-policy",
+        "strict-transport-security",
+        "x-frame-options",
+        "x-content-type-options",
+        "referrer-policy",
+        "permissions-policy",
+        "x-xss-protection",
+    ]
+    for h in security_headers:
+        if h in headers_lower:
+            result["security_headers"][h] = headers_lower[h][:200]
+        else:
+            result["missing_headers"].append(h)
+
+    # Cookies
+    raw_cookies = headers_lower.get("set-cookie", "")
+    if raw_cookies:
+        for chunk in _re.split(r",\s*(?=[A-Za-z0-9_\-]+=)", raw_cookies):
+            name = chunk.split("=", 1)[0].strip() if "=" in chunk else ""
+            if name:
+                result["cookies"].append({
+                    "name": name,
+                    "secure": "secure" in chunk.lower(),
+                    "httponly": "httponly" in chunk.lower(),
+                    "samesite": ("samesite=" in chunk.lower()),
+                })
+
+    # Meta tags (safe regex)
+    meta_re = _re.compile(r'<meta\s+[^>]*?name\s*=\s*["\x27]([^"\x27]+)["\x27][^>]*?content\s*=\s*["\x27]([^"\x27]*)["\x27]', _re.IGNORECASE)
+    for match in meta_re.finditer(body):
+        k = match.group(1).lower()
+        v = match.group(2)[:200]
+        if len(result["meta_tags"]) < 20:
+            result["meta_tags"][k] = v
+
+    # Dedupe technologies
+    seen = set()
+    unique_tech = []
+    for t in result["technologies"]:
+        if t and t not in seen:
+            seen.add(t)
+            unique_tech.append(t)
+    result["technologies"] = unique_tech
+    result["all_technologies"] = unique_tech
+
+    log.info("fingerprint_advanced_complete",
+             server=result["server"][:40],
+             tech_count=len(unique_tech),
+             waf=result["waf"])
+    return result
+
+
 async def detect_waf(pool, url):
     resp = await pool.send("GET", url + "/?test=<script>alert(1)</script>")
     if resp.status in (403, 406, 419, 429, 503):
@@ -1091,6 +1283,175 @@ async def test_xss_post_from_config(pool, config):
     return findings
 
 # === END POST XSS SUPPORT ===
+
+async def test_sqli_post(pool, endpoint, params, post_data="", post_json=""):
+    """Test SQL injection in POST body."""
+    from framework_bridge import (
+        SQLI_ERROR_PAYLOADS, sqli_has_db_error, sqli_looks_like_error,
+    )
+    from urllib.parse import urlencode, parse_qs
+    import json as _json
+    findings = []
+    if not params:
+        return findings
+    for param in params:
+        for payload in SQLI_ERROR_PAYLOADS:
+            try:
+                if post_json:
+                    body_obj = _json.loads(post_json)
+                    if not isinstance(body_obj, dict):
+                        body_obj = {}
+                    body_obj[param] = payload
+                    resp = await pool.send("POST", endpoint, json=body_obj,
+                        headers={"Content-Type": "application/json"})
+                elif post_data:
+                    parsed = parse_qs(post_data, keep_blank_values=True)
+                    parsed[param] = [payload]
+                    new_body = urlencode(parsed, doseq=True)
+                    resp = await pool.send("POST", endpoint, content=new_body,
+                        headers={"Content-Type": "application/x-www-form-urlencoded"})
+                else:
+                    resp = await pool.send("POST", endpoint,
+                        data={param: payload})
+            except Exception as _e:
+                log.debug("sqli_post_failed", param=param, error=str(_e))
+                continue
+            if not resp or resp.status == 0:
+                continue
+            body = resp.text or ""
+            sig = sqli_has_db_error(body)
+            if not sig and resp.status == 500 and sqli_looks_like_error(body):
+                sig = "HTTP 500"
+            if sig:
+                findings.append({
+                    "vuln_class": "sqli",
+                    "subtype": "post_error_based",
+                    "severity": "critical",
+                    "url": endpoint,
+                    "injected_url": endpoint,
+                    "param": param,
+                    "payload": payload,
+                    "method": "POST",
+                    "db_error": sig,
+                    "evidence": body[:500],
+                    "confidence": 0.9,
+                })
+                log.info("sqli_post_found", endpoint=endpoint, param=param)
+                break
+    return findings
+
+
+async def test_ssrf_post(pool, endpoint, params, post_data="", post_json=""):
+    """Test SSRF in POST body."""
+    from urllib.parse import urlencode, parse_qs
+    import json as _json
+    findings = []
+    if not params:
+        return findings
+    ssrf_payloads = [
+        "http://127.0.0.1:80",
+        "http://localhost",
+        "http://169.254.169.254/latest/meta-data/",
+        "file:///etc/passwd",
+    ]
+    for param in params:
+        for payload in ssrf_payloads:
+            try:
+                if post_json:
+                    body_obj = _json.loads(post_json)
+                    if not isinstance(body_obj, dict):
+                        body_obj = {}
+                    body_obj[param] = payload
+                    resp = await pool.send("POST", endpoint, json=body_obj,
+                        headers={"Content-Type": "application/json"})
+                elif post_data:
+                    parsed = parse_qs(post_data, keep_blank_values=True)
+                    parsed[param] = [payload]
+                    new_body = urlencode(parsed, doseq=True)
+                    resp = await pool.send("POST", endpoint, content=new_body,
+                        headers={"Content-Type": "application/x-www-form-urlencoded"})
+                else:
+                    resp = await pool.send("POST", endpoint,
+                        data={param: payload})
+            except Exception as _e:
+                log.debug("ssrf_post_failed", param=param, error=str(_e))
+                continue
+            if not resp or resp.status == 0:
+                continue
+            body_low = (resp.text or "").lower()
+            if any(m in body_low for m in ["aws", "metadata", "root:", "instance-id"]):
+                findings.append({
+                    "vuln_class": "ssrf",
+                    "subtype": "post_ssrf",
+                    "severity": "critical",
+                    "url": endpoint,
+                    "injected_url": endpoint,
+                    "param": param,
+                    "payload": payload,
+                    "method": "POST",
+                    "evidence": (resp.text or "")[:500],
+                    "confidence": 0.85,
+                })
+                log.info("ssrf_post_found", endpoint=endpoint, param=param)
+                break
+    return findings
+
+
+async def test_open_redirect_post(pool, endpoint, params, post_data="", post_json=""):
+    """Test open redirect in POST body."""
+    from urllib.parse import urlencode, parse_qs
+    import json as _json
+    findings = []
+    if not params:
+        return findings
+    redirect_payloads = [
+        "https://evil.com",
+        "//evil.com",
+        "https://google.com",
+    ]
+    for param in params:
+        for payload in redirect_payloads:
+            try:
+                if post_json:
+                    body_obj = _json.loads(post_json)
+                    if not isinstance(body_obj, dict):
+                        body_obj = {}
+                    body_obj[param] = payload
+                    resp = await pool.send("POST", endpoint, json=body_obj,
+                        headers={"Content-Type": "application/json"})
+                elif post_data:
+                    parsed = parse_qs(post_data, keep_blank_values=True)
+                    parsed[param] = [payload]
+                    new_body = urlencode(parsed, doseq=True)
+                    resp = await pool.send("POST", endpoint, content=new_body,
+                        headers={"Content-Type": "application/x-www-form-urlencoded"})
+                else:
+                    resp = await pool.send("POST", endpoint,
+                        data={param: payload})
+            except Exception as _e:
+                log.debug("redirect_post_failed", param=param, error=str(_e))
+                continue
+            if not resp or resp.status == 0:
+                continue
+            if resp.status in (301, 302, 303, 307, 308):
+                location = (resp.headers or {}).get("location", "")
+                if "evil.com" in location or "google.com" in location:
+                    findings.append({
+                        "vuln_class": "open_redirect",
+                        "subtype": "post_redirect",
+                        "severity": "medium",
+                        "url": endpoint,
+                        "injected_url": endpoint,
+                        "param": param,
+                        "payload": payload,
+                        "method": "POST",
+                        "evidence": "Redirects to: " + location,
+                        "confidence": 0.9,
+                    })
+                    log.info("redirect_post_found", endpoint=endpoint, param=param)
+                    break
+    return findings
+
 
 async def test_sqli(pool, endpoint, params):
     """Test for SQL injection (error-based + time-based)."""
@@ -1941,6 +2302,38 @@ async def run_vulnerability_tests_v2(pool, crawl_result, ai_plan, oast=None, waf
         ssti = await test_ssti(pool, [root], ["name", "q"])
         all_findings.extend(ssti)
     
+    # === FINGERPRINT ADVANCED (Stage 2.B2) ===
+    try:
+        advanced_fp = await test_fingerprint_advanced(pool, target)
+        if advanced_fp:
+            config["_fingerprint_advanced"] = advanced_fp
+            log.info("fingerprint_advanced_wired", tech_count=len(advanced_fp.get("technologies", [])))
+    except Exception as _fp:
+        log.warning("fingerprint_advanced_failed", error=str(_fp))
+    # === END FINGERPRINT ADVANCED ===
+
+    # === POST SQLi/SSRF/Redirect (Stage 2.B3) ===
+    try:
+        forms_post = config.get("_crawl_forms_post", []) or []
+        for _form in forms_post[:5]:
+            _action = _form.get("action", "")
+            _body = _form.get("body", "")
+            _fields = _form.get("fields", []) or []
+            if not _action or not _fields:
+                continue
+            _pj = _body if _body.strip().startswith("{") else ""
+            _pd = "" if _pj else _body
+            _sqli_post = await test_sqli_post(pool, _action, _fields, post_data=_pd, post_json=_pj)
+            all_findings.extend(_sqli_post)
+            _ssrf_post = await test_ssrf_post(pool, _action, _fields, post_data=_pd, post_json=_pj)
+            all_findings.extend(_ssrf_post)
+            _redir_post = await test_open_redirect_post(pool, _action, _fields, post_data=_pd, post_json=_pj)
+            all_findings.extend(_redir_post)
+        log.info("post_sqli_ssrf_redirect_complete", total=len(all_findings))
+    except Exception as _ps:
+        log.warning("post_sqli_ssrf_redirect_failed", error=str(_ps))
+    # === END POST SQLi/SSRF/Redirect ===
+
     log.info("vuln_tests_v2_complete", findings=len(all_findings), requests=pool.request_count)
     return all_findings
 

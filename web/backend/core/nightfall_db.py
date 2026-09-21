@@ -68,7 +68,7 @@ def get_scan_by_id(scan_id: int):
         conn.close()
 
 
-def get_findings(limit: int = 200, severity: Optional[str] = None, vuln_class: Optional[str] = None, scan_id: Optional[int] = None):
+def get_findings(limit: int = 200, severity: Optional[str] = None, vuln_class: Optional[str] = None, scan_id: Optional[str] = None):
     conn = _conn()
     if not conn:
         return []

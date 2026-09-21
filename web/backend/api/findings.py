@@ -17,7 +17,7 @@ async def list_findings(
     limit: int = 100,
     severity: Optional[str] = None,
     vuln_class: Optional[str] = None,
-    scan_id: Optional[int] = None,
+    scan_id: Optional[str] = None,
     user: dict = Depends(get_current_user),
 ):
     """List findings, optionally filtered by scan_id."""

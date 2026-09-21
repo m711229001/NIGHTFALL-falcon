@@ -711,6 +711,18 @@ def _save_reports_to_backend(state):
     except Exception as e:
         print("[cli_runner] save_reports_to_backend failed: %s" % e, flush=True)
 
+
+def _translate_target(target: str) -> str:
+    """Translate localhost/127.0.0.1 to host.docker.internal when running in Docker."""
+    import os
+    if not os.path.exists("/app/framework/cli.py"):
+        return target  # not in docker
+    # In Docker: localhost -> host.docker.internal
+    target = target.replace("://localhost", "://host.docker.internal")
+    target = target.replace("://127.0.0.1", "://host.docker.internal")
+    return target
+
+
 def build_scan_args(
     target: str,
     modules: Optional[str] = None,
@@ -738,6 +750,7 @@ def build_scan_args(
     ai_max: int = 20,
 ) -> List[str]:
     """Build the argv list for `python framework/cli.py scan ...`."""
+    target = _translate_target(target)
     args = [
         _python_bin(), str(CLI_PATH),
         "scan", target,
@@ -766,7 +779,7 @@ def build_scan_args(
     if cookie_file:
         args += ["--cookie-file", cookie_file]
     if cookies:
-        args += ["--cookies", cookies]
+        args += ["--cookie", cookies]
     if method and method != "GET":
         args += ["--method", method]
     if post_data:

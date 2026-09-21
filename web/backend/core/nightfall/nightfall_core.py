@@ -1097,6 +1097,139 @@ async def waf_advanced_from_config(pool, config):
 # END WAF ADVANCED
 
 
+async def test_db_fingerprint(pool, target):
+    """Advanced DB fingerprinting."""
+    import re as _re
+    result = {
+        "target": target,
+        "db_hints": [],
+        "version_hints": [],
+        "connection_strings": [],
+        "findings": [],
+        "vulnerable": [],
+    }
+    resp = await pool.send("GET", target)
+    if not resp or resp.status == 0:
+        result["error"] = "unreachable"
+        return result
+    body = (resp.text or "")
+    body_lower = body.lower()
+    DB_PATTERNS = {
+        "MySQL": [r"mysql_", r"mysqli", r"sql syntax.*mysql", r"warning.*mysql"],
+        "PostgreSQL": [r"postgresql", r"pg_query", r"pg_exec", r"sqlstate\["],
+        "MSSQL": [r"microsoft sql server", r"odbc sql server", r"sqlserver"],
+        "Oracle": [r"ora-\d{4,5}", r"oracle.*driver"],
+        "MongoDB": [r"mongodb", r"mongo error", r"bson"],
+        "SQLite": [r"sqlite", r"operationalerror"],
+        "Redis": [r"redis", r"err_client"],
+    }
+    for db, patterns in DB_PATTERNS.items():
+        for p in patterns:
+            if _re.search(p, body_lower):
+                result["db_hints"].append(db)
+                break
+    VERSION_PATTERNS = [
+        (r"mysql (\d+\.\d+\.\d+)", "MySQL"),
+        (r"postgresql (\d+\.\d+)", "PostgreSQL"),
+        (r"microsoft sql server (\d+)", "MSSQL"),
+        (r"mongodb (\d+\.\d+)", "MongoDB"),
+    ]
+    for pat, db in VERSION_PATTERNS:
+        m = _re.search(pat, body_lower)
+        if m:
+            result["version_hints"].append({"db": db, "version": m.group(1)})
+    CONN_PATTERNS = [
+        r"mysql://[^\s\"\x27<>]+",
+        r"postgres(?:ql)?://[^\s\"\x27<>]+",
+        r"mongodb(?:\+srv)?://[^\s\"\x27<>]+",
+        r"redis://[^\s\"\x27<>]+",
+        r"jdbc:[a-z]+://[^\s\"\x27<>]+",
+    ]
+    for pat in CONN_PATTERNS:
+        matches = _re.findall(pat, body, _re.IGNORECASE)
+        for m in matches[:3]:
+            if m not in result["connection_strings"]:
+                result["connection_strings"].append(m[:200])
+    for conn in result["connection_strings"][:3]:
+        result["findings"].append({
+            "vuln_class": "db_fingerprint",
+            "subtype": "connection_string_leak",
+            "severity": "critical",
+            "url": target,
+            "param": "",
+            "payload": conn[:100],
+            "evidence": "DB connection string exposed",
+            "confidence": 0.85,
+        })
+    result["vulnerable"] = result["findings"]
+    log.info("db_fingerprint_complete",
+             db_hints=len(result["db_hints"]),
+             conn_strings=len(result["connection_strings"]))
+    return result
+
+
+async def attack_suggestions_from_fingerprint(pool, config):
+    """Generate attack suggestions."""
+    target = config.get("target", "")
+    fp = config.get("_fingerprint_advanced", {}) or {}
+    waf_adv = config.get("_waf_advanced", {}) or {}
+    suggestions = {"target": target, "paths": [], "vectors": [], "notes": []}
+    cms = (fp.get("cms") or "").lower()
+    fw = (fp.get("framework") or "").lower()
+    lang = (fp.get("language") or "").lower()
+    server = (fp.get("server") or "").lower()
+    waf = (waf_adv.get("waf") or "").lower()
+    if "wordpress" in cms:
+        suggestions["paths"].extend(["/wp-admin", "/wp-login.php", "/xmlrpc.php",
+                                     "/wp-json/wp/v2/users", "/?author=1"])
+        suggestions["vectors"].append("WordPress plugin CVEs")
+        suggestions["vectors"].append("XML-RPC brute force")
+        suggestions["notes"].append("Check user enumeration via ?author=1")
+    elif "joomla" in cms:
+        suggestions["paths"].extend(["/administrator", "/components/com_users",
+                                     "/configuration.php~"])
+        suggestions["vectors"].append("Joomla component SQLi")
+    elif "drupal" in cms:
+        suggestions["paths"].extend(["/user/login", "/admin", "/CHANGELOG.txt"])
+        suggestions["vectors"].append("Drupalgeddon RCE")
+    if "next.js" in fw or "nextjs" in fw:
+        suggestions["paths"].extend(["/_next/data", "/api/", "/_next/static/"])
+        suggestions["vectors"].append("Next.js middleware bypass")
+        suggestions["vectors"].append("RSC data leakage")
+    elif "laravel" in fw:
+        suggestions["paths"].extend(["/.env", "/telescope", "/_ignition/health-check"])
+        suggestions["vectors"].append("Laravel debug mode RCE")
+    elif "django" in fw:
+        suggestions["paths"].extend(["/admin/", "/api/", "/static/admin/"])
+        suggestions["vectors"].append("Django debug page leak")
+    if "php" in lang:
+        suggestions["paths"].extend(["/phpinfo.php", "/info.php"])
+    elif "asp.net" in lang:
+        suggestions["paths"].extend(["/web.config", "/trace.axd", "/elmah.axd"])
+    elif "python" in lang:
+        suggestions["paths"].extend(["/__debug__", "/.git/HEAD"])
+    if "nginx" in server:
+        suggestions["paths"].extend(["/nginx_status", "/status"])
+    elif "apache" in server:
+        suggestions["paths"].extend(["/server-status", "/server-info"])
+    elif "iis" in server:
+        suggestions["paths"].extend(["/iisstart.htm", "/web.config"])
+    if "cloudflare" in waf:
+        suggestions["notes"].append("Cloudflare detected: try direct origin IP")
+        suggestions["notes"].append("Use HTTP/2 or chunked transfer to bypass")
+    elif "aws waf" in waf:
+        suggestions["notes"].append("AWS WAF: try URL/HTML encoding layers")
+    elif "imperva" in waf:
+        suggestions["notes"].append("Imperva: try charset manipulation")
+    suggestions["paths"] = list(dict.fromkeys(suggestions["paths"]))
+    suggestions["vectors"] = list(dict.fromkeys(suggestions["vectors"]))
+    suggestions["notes"] = list(dict.fromkeys(suggestions["notes"]))
+    log.info("attack_suggestions_complete",
+             paths=len(suggestions["paths"]),
+             vectors=len(suggestions["vectors"]))
+    return suggestions
+
+
 async def detect_waf(pool, url):
     resp = await pool.send("GET", url + "/?test=<script>alert(1)</script>")
     if resp.status in (403, 406, 419, 429, 503):
@@ -1435,6 +1568,70 @@ def render_report(findings, summary, output_dir="reports"):
             lines.append(f"- **Missing Security Headers:** {len(missing)}")
         lines.append("")
     # END SITE MAP
+
+    # WAF DETAILS (Stage 2.D v2)
+    waf_adv = summary.get("_waf_advanced") or {}
+    if waf_adv and waf_adv.get("detected"):
+        lines.append("---")
+        lines.append("")
+        lines.append("## WAF DETECTED")
+        lines.append("")
+        lines.append("- **WAF:** `" + str(waf_adv.get("waf", "Unknown")) + "`")
+        lines.append("- **Strictness:** `" + str(waf_adv.get("strictness", "N/A")) + "`")
+        signals = waf_adv.get("signals", [])
+        if signals:
+            lines.append("- **Signals (" + str(len(signals)) + "):** " + ", ".join(signals[:5]))
+        bs = waf_adv.get("bypass_suggestions", [])
+        if bs:
+            lines.append("")
+            lines.append("### Bypass Suggestions")
+            for s in bs[:10]:
+                lines.append("- " + str(s))
+        lines.append("")
+    # END WAF DETAILS
+
+    # DB FINGERPRINT (Stage 2.D v2)
+    db_fp = summary.get("_db_fingerprint") or {}
+    if db_fp and db_fp.get("db_hints"):
+        lines.append("---")
+        lines.append("")
+        lines.append("## DB FINGERPRINT")
+        lines.append("")
+        lines.append("- **DB Hints:** " + ", ".join(db_fp.get("db_hints", [])))
+        vh = db_fp.get("version_hints") or []
+        if vh:
+            lines.append("- **Version Hints:**")
+            for v in vh[:5]:
+                lines.append("  - " + str(v.get("db")) + ": " + str(v.get("version")))
+        cs = db_fp.get("connection_strings") or []
+        if cs:
+            lines.append("- **Connection Strings Leaked:** " + str(len(cs)))
+        lines.append("")
+    # END DB FINGERPRINT
+
+    # ATTACK SUGGESTIONS (Stage 2.D v2)
+    suggestions = summary.get("_attack_suggestions") or {}
+    if suggestions and (suggestions.get("paths") or suggestions.get("vectors")):
+        lines.append("---")
+        lines.append("")
+        lines.append("## ATTACK SUGGESTIONS")
+        lines.append("")
+        if suggestions.get("paths"):
+            lines.append("### Suggested Paths")
+            for p in suggestions["paths"][:20]:
+                lines.append("- `" + str(p) + "`")
+            lines.append("")
+        if suggestions.get("vectors"):
+            lines.append("### Suggested Vectors")
+            for v in suggestions["vectors"][:10]:
+                lines.append("- " + str(v))
+            lines.append("")
+        if suggestions.get("notes"):
+            lines.append("### Notes")
+            for n in suggestions["notes"][:10]:
+                lines.append("- " + str(n))
+            lines.append("")
+    # END ATTACK SUGGESTIONS
 
     # CRAWL SUMMARY
     # ============================================================

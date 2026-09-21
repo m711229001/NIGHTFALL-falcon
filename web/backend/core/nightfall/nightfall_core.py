@@ -796,6 +796,118 @@ async def test_fingerprint_advanced(pool, target):
     return result
 
 
+async def test_security_headers(pool, target):
+    """Detailed security headers analysis."""
+    resp = await pool.send("GET", target)
+    if not resp or resp.status == 0:
+        return {"error": "unreachable", "target": target}
+    hdrs = {k.lower(): (v or "") for k, v in (resp.headers or {}).items()}
+    SECURITY_HEADERS = {
+        "content-security-policy": "high",
+        "strict-transport-security": "high",
+        "x-frame-options": "medium",
+        "x-content-type-options": "medium",
+        "referrer-policy": "low",
+        "permissions-policy": "low",
+        "x-xss-protection": "low",
+        "cross-origin-opener-policy": "low",
+        "cross-origin-embedder-policy": "low",
+        "cross-origin-resource-policy": "low",
+    }
+    present = {}
+    missing = []
+    for h, sev in SECURITY_HEADERS.items():
+        if h in hdrs:
+            present[h] = hdrs[h][:300]
+        else:
+            missing.append({"header": h, "severity": sev})
+    findings = []
+    for item in missing:
+        findings.append({
+            "vuln_class": "security_headers",
+            "subtype": "missing_header",
+            "severity": item["severity"],
+            "url": target,
+            "param": item["header"],
+            "payload": "",
+            "evidence": f"Missing: {item['header']}",
+            "confidence": 0.9,
+        })
+    log.info("security_headers_complete",
+             present=len(present), missing=len(missing))
+    return {
+        "target": target,
+        "present": present,
+        "missing": missing,
+        "findings": findings,
+        "vulnerable": findings,
+    }
+
+
+async def test_cookies_advanced(pool, target):
+    """Detailed cookie security analysis."""
+    import re as _re
+    resp = await pool.send("GET", target)
+    if not resp or resp.status == 0:
+        return {"error": "unreachable", "target": target}
+    hdrs = {k.lower(): (v or "") for k, v in (resp.headers or {}).items()}
+    raw = hdrs.get("set-cookie", "")
+    cookies = []
+    findings = []
+    if not raw:
+        return {"target": target, "cookies": [], "vulnerable": []}
+    SESSION_HINTS = ("session", "sess", "sid", "auth", "token", "jwt",
+                     "login", "user", "csrf", "remember")
+    for chunk in _re.split(r",\s*(?=[A-Za-z0-9_\-]+=)", raw):
+        if "=" not in chunk:
+            continue
+        name = chunk.split("=", 1)[0].strip()
+        if not name:
+            continue
+        lower = chunk.lower()
+        info = {
+            "name": name,
+            "secure": "secure" in lower,
+            "httponly": "httponly" in lower,
+            "samesite": None,
+        }
+        m = _re.search(r"samesite=(\w+)", lower)
+        if m:
+            info["samesite"] = m.group(1)
+        cookies.append(info)
+        missing = []
+        if not info["secure"]:
+            missing.append("Secure")
+        if not info["httponly"]:
+            missing.append("HttpOnly")
+        if not info["samesite"]:
+            missing.append("SameSite")
+        if not missing:
+            continue
+        name_lower = name.lower()
+        is_session = any(h in name_lower for h in SESSION_HINTS)
+        sev = "medium" if is_session else "low"
+        if "Secure" in missing and "HttpOnly" in missing and is_session:
+            sev = "high"
+        findings.append({
+            "vuln_class": "cookies",
+            "subtype": "insecure_cookie",
+            "severity": sev,
+            "url": target,
+            "param": name,
+            "payload": "",
+            "evidence": f"Cookie '{name}' missing: {', '.join(missing)}",
+            "confidence": 0.9,
+        })
+    log.info("cookies_advanced_complete", total=len(cookies), insecure=len(findings))
+    return {
+        "target": target,
+        "cookies": cookies,
+        "findings": findings,
+        "vulnerable": findings,
+    }
+
+
 async def detect_waf(pool, url):
     resp = await pool.send("GET", url + "/?test=<script>alert(1)</script>")
     if resp.status in (403, 406, 419, 429, 503):
@@ -1104,6 +1216,37 @@ def render_report(findings, summary, output_dir="reports"):
             lines.append("")
 
     # ============================================================
+    # SITE MAP (Fingerprint Advanced) - Stage 2.B5
+    fp_adv = summary.get("_fingerprint_advanced") or {}
+    if fp_adv and fp_adv.get("technologies"):
+        lines.append("---")
+        lines.append("")
+        lines.append("## SITE MAP (Fingerprint Advanced)")
+        lines.append("")
+        lines.append(f"- **Server:** `{fp_adv.get('server', 'N/A')}`")
+        lines.append(f"- **Powered-By:** `{fp_adv.get('powered_by', 'N/A')}`")
+        lines.append(f"- **Language:** `{fp_adv.get('language', 'N/A')}`")
+        lines.append(f"- **Framework:** `{fp_adv.get('framework', 'N/A')}`")
+        lines.append(f"- **CMS:** `{fp_adv.get('cms', 'N/A')}`")
+        lines.append(f"- **WAF:** `{fp_adv.get('waf') or 'None'}`")
+        techs = fp_adv.get("technologies", [])
+        if techs:
+            lines.append(f"- **Technologies ({len(techs)}):** {', '.join(techs)}")
+        js_libs = fp_adv.get("js_libs", [])
+        if js_libs:
+            lines.append(f"- **JS Libraries:** {', '.join(js_libs)}")
+        db_hints = fp_adv.get("db_hints", [])
+        if db_hints:
+            lines.append(f"- **DB Hints:** {', '.join(db_hints)}")
+        cookies = fp_adv.get("cookies", [])
+        if cookies:
+            lines.append(f"- **Cookies ({len(cookies)}):** {', '.join(c['name'] for c in cookies[:5])}")
+        missing = fp_adv.get("missing_headers", [])
+        if missing:
+            lines.append(f"- **Missing Security Headers:** {len(missing)}")
+        lines.append("")
+    # END SITE MAP
+
     # CRAWL SUMMARY
     # ============================================================
     if crawl:
@@ -2334,6 +2477,26 @@ async def run_vulnerability_tests_v2(pool, crawl_result, ai_plan, oast=None, waf
         log.warning("post_sqli_ssrf_redirect_failed", error=str(_ps))
     # === END POST SQLi/SSRF/Redirect ===
 
+    # === SECURITY HEADERS (Stage 2.B6) ===
+    try:
+        sh_result = await test_security_headers(pool, target)
+        if sh_result and sh_result.get("vulnerable"):
+            all_findings.extend(sh_result["vulnerable"])
+            config["_security_headers_wired"] = sh_result
+    except Exception as _sh:
+        log.warning("security_headers_failed", error=str(_sh))
+    # === END SECURITY HEADERS ===
+
+    # === COOKIES ADVANCED (Stage 2.B7) ===
+    try:
+        ck_result = await test_cookies_advanced(pool, target)
+        if ck_result and ck_result.get("vulnerable"):
+            all_findings.extend(ck_result["vulnerable"])
+            config["_cookies_advanced_wired"] = ck_result
+    except Exception as _ck:
+        log.warning("cookies_advanced_failed", error=str(_ck))
+    # === END COOKIES ADVANCED ===
+
     log.info("vuln_tests_v2_complete", findings=len(all_findings), requests=pool.request_count)
     return all_findings
 
@@ -3010,6 +3173,59 @@ async def test_xss_with_waf_bypass(pool, endpoint, params, waf_detected=False):
                      waf_bypass=waf_detected)
             break
     return findings
+
+async def test_sqli_with_waf_bypass_v2(pool, endpoint, params, waf_detected=False):
+    """SQLi with WAF bypass - dedicated variant using framework helpers."""
+    from framework_bridge import (
+        SQLI_ERROR_PAYLOADS, sqli_has_db_error, sqli_looks_like_error,
+    )
+    from urllib.parse import quote
+    findings = []
+    if not params:
+        return findings
+    if waf_detected:
+        variants = [
+            SQLI_ERROR_PAYLOADS,
+            ["1'/**/OR/**/'1'='1", "1'/*!UNION*//*!SELECT*/NULL--"],
+            ["%27%20OR%201=1--", "%27%20UNION%20SELECT%20NULL--"],
+        ]
+        flat = []
+        for v in variants:
+            flat.extend(v)
+        variants = list(dict.fromkeys(flat))
+    else:
+        variants = SQLI_ERROR_PAYLOADS
+    for param in params:
+        for payload in variants:
+            try:
+                test_url = f"{endpoint}?{param}={quote(payload, safe='')}"
+                resp = await pool.send("GET", test_url)
+            except Exception as _e:
+                log.debug("sqli_waf_failed", param=param, error=str(_e))
+                continue
+            if not resp or resp.status == 0:
+                continue
+            body = resp.text or ""
+            sig = sqli_has_db_error(body)
+            if not sig and resp.status == 500 and sqli_looks_like_error(body):
+                sig = "HTTP 500"
+            if sig:
+                findings.append({
+                    "vuln_class": "sqli",
+                    "subtype": "error_based_waf_bypass",
+                    "severity": "critical",
+                    "url": test_url,
+                    "injected_url": test_url,
+                    "param": param,
+                    "payload": payload,
+                    "db_error": sig,
+                    "evidence": body[:300],
+                    "confidence": 0.9,
+                })
+                log.info("sqli_waf_found", param=param)
+                break
+    return findings
+
 
 async def test_sqli_with_waf_bypass(pool, endpoint, params, waf_detected=False):
     findings = []

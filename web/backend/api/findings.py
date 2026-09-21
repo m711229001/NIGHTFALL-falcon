@@ -17,9 +17,23 @@ async def list_findings(
     limit: int = 100,
     severity: Optional[str] = None,
     vuln_class: Optional[str] = None,
+    scan_id: Optional[int] = None,
     user: dict = Depends(get_current_user),
 ):
-    return nightfall_db.get_findings(limit=limit, severity=severity, vuln_class=vuln_class)
+    """List findings, optionally filtered by scan_id."""
+    try:
+        return nightfall_db.get_findings(
+            limit=limit,
+            severity=severity,
+            vuln_class=vuln_class,
+            scan_id=scan_id,
+        )
+    except TypeError:
+        # Fallback: filter in Python if get_findings doesn't support scan_id
+        all_findings = nightfall_db.get_findings(limit=limit, severity=severity, vuln_class=vuln_class)
+        if scan_id is not None:
+            all_findings = [f for f in all_findings if f.get("scan_id") == scan_id]
+        return all_findings
 
 
 @router.get("/{finding_id}")

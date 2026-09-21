@@ -984,6 +984,114 @@ async def test_xss(pool, endpoint, params, payloads=None):
             break  # اكفِ بهذا param
     return findings
 
+
+# === POST XSS SUPPORT (Stage 2.B1) ===
+async def test_xss_post(pool, endpoint, params, post_data="", post_json="",
+                        method="POST", content_type=None):
+    """Test for reflected XSS in POST body (form-encoded or JSON)."""
+    from framework_bridge import (
+        XSS_PAYLOADS, xss_verify_reflection, xss_find_context,
+    )
+    from urllib.parse import urlencode, parse_qs
+    import json as _json
+
+    findings = []
+    if not params:
+        return findings
+
+    payloads = XSS_PAYLOADS
+
+    for param in params:
+        for payload in payloads:
+            try:
+                if post_json:
+                    body_obj = _json.loads(post_json)
+                    if not isinstance(body_obj, dict):
+                        body_obj = {}
+                    body_obj[param] = payload
+                    kwargs = {"json": body_obj}
+                    effective_ct = "application/json"
+                elif post_data:
+                    parsed = parse_qs(post_data, keep_blank_values=True)
+                    parsed[param] = [payload]
+                    new_body = urlencode(parsed, doseq=True)
+                    kwargs = {"content": new_body}
+                    effective_ct = content_type or "application/x-www-form-urlencoded"
+                else:
+                    kwargs = {"data": {param: payload}}
+                    effective_ct = "application/x-www-form-urlencoded"
+
+                headers = kwargs.pop("headers", {})
+                headers["Content-Type"] = effective_ct
+                kwargs["headers"] = headers
+
+                resp = await pool.send(method, endpoint, **kwargs)
+                if resp.status == 0:
+                    continue
+
+                body = resp.text or ""
+                if not xss_verify_reflection(body, payload):
+                    continue
+
+                ctx = xss_find_context(body, payload) or {}
+
+                findings.append({
+                    "vuln_class": "xss",
+                    "subtype": "reflected_post",
+                    "severity": "high",
+                    "url": endpoint,
+                    "injected_url": endpoint,
+                    "param": param,
+                    "payload": payload,
+                    "method": method,
+                    "content_type": effective_ct,
+                    "context_type": ctx.get("type", "html"),
+                    "context_before": ctx.get("before", ""),
+                    "context_after": ctx.get("after", ""),
+                    "evidence": body[:500],
+                    "confidence": 0.9,
+                })
+                log.info("xss_post_found", endpoint=endpoint, param=param,
+                         method=method, payload=payload[:50])
+                break
+            except Exception as _e:
+                log.debug("xss_post_failed", param=param, error=str(_e))
+                continue
+    return findings
+
+
+async def test_xss_post_from_config(pool, config):
+    """Wrapper: extract POST forms from config and run test_xss_post."""
+    findings = []
+    forms = config.get("_crawl_forms_post", []) or []
+    if not forms:
+        return findings
+
+    for form in forms[:5]:
+        action = form.get("action", "")
+        body = form.get("body", "")
+        fields = form.get("fields", []) or []
+        if not action or not fields:
+            continue
+
+        post_json = ""
+        post_data = ""
+        if body.strip().startswith("{"):
+            post_json = body
+        else:
+            post_data = body
+
+        sub = await test_xss_post(
+            pool, action, fields,
+            post_data=post_data,
+            post_json=post_json,
+            method="POST",
+        )
+        findings.extend(sub)
+    return findings
+
+# === END POST XSS SUPPORT ===
+
 async def test_sqli(pool, endpoint, params):
     """Test for SQL injection (error-based + time-based)."""
     error_payloads = [

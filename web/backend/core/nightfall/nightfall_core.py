@@ -908,6 +908,195 @@ async def test_cookies_advanced(pool, target):
     }
 
 
+# ============================================================
+# WAF ADVANCED DETECTION (Stage 2.B8-WAF)
+# ============================================================
+# 30+ WAF signatures, active probing, strictness analysis,
+# bypass suggestions. Coexists with legacy detect_waf().
+
+WAF_SIGNATURES = [
+    # (Name, header_keys_lower, server_keywords_lower, cookie_prefixes)
+    ("Cloudflare", ["cf-ray", "cf-cache-status", "cf-request-id"], ["cloudflare"], ["__cf_bm", "__cfduid", "cf_clearance"]),
+    ("AWS WAF", ["x-amzn-requestid", "x-amz-cf-id", "x-amz-apigw-id"], ["awselb", "aws-waf"], []),
+    ("AWS CloudFront", ["x-amz-cf-pop", "x-amz-cf-id"], ["cloudfront"], []),
+    ("Akamai", ["x-akamai-transformed", "akamai-grn", "x-akamai-request-id"], ["akamaighost", "akamai"], []),
+    ("Sucuri", ["x-sucuri-id", "x-sucuri-cache", "x-sucuri-block"], ["sucuri"], ["sucuri_cloudproxy"]),
+    ("Imperva", ["x-iinfo", "x-cdn"], ["incapsula", "imperva"], ["incap_ses", "visid_incap"]),
+    ("F5 BIG-IP", ["x-wa-info", "x-cnection"], ["bigipserver", "f5", "big-ip"], ["bigipserver", "ts", "f5_cspm"]),
+    ("Barracuda", ["barra_counter_session"], ["barracuda"], ["barra_counter_session", "barra_session"]),
+    ("ModSecurity", [], ["mod_security", "modsecurity", "noModSecurity"], []),
+    ("Wordfence", ["x-wordfence"], ["wordfence"], ["wfvt_", "wordfence_verifiedHuman"]),
+    ("Fortinet", [], ["fortiweb", "fortigate"], ["FORTIWAFSID"]),
+    ("Citrix NetScaler", ["x-ns-cache"], ["netscaler", "citrix", "ns-cache"], ["citrix_ns_id", "NSC_"]),
+    ("Fastly", ["x-served-by", "x-fastly-request-id", "fastly-debug-digest"], ["fastly", "varnish"], []),
+    ("Varnish", ["x-varnish", "via"], ["varnish"], []),
+    ("StackPath", ["x-sp-cache"], ["stackpath"], []),
+    ("KeyCDN", ["x-cache"], ["keycdn"], []),
+    ("Radware", [], ["radware", "appwall"], ["rdwr"]),
+    ("Wallarm", ["x-wallarm-waf", "server: nginx-wallarm"], ["wallarm"], []),
+    ("DenyAll", [], ["denyall"], ["sessioncookie"]),
+    ("Reblaze", ["rbzid"], ["reblaze"], []),
+    ("Distil", [], ["distil"], []),
+    ("Juniper", [], ["juniper", "junos"], []),
+    ("NGINX Plus", [], ["nginx-plus"], []),
+    ("Cloudflare Bot Mgmt", ["cf-mitigated"], [], ["cf_chl_"]),
+    ("Alibaba Cloud WAF", ["ali-cdn-real-ip", "eagleeye-traceid"], ["tengine", "alibaba"], []),
+    ("Tencent Cloud WAF", ["x-nws-log-uuid"], ["tencent"], []),
+    ("Huawei Cloud WAF", [], ["hw-waf", "huawei"], []),
+    ("360 WAF", [], ["360wzws", "wangzhan"], ["wzws_sessionid"]),
+    ("SafeDog", [], ["safedog"], ["safedog-flow-item"]),
+    ("Yunsuo", [], ["yunsuo"], ["yunsuo_session"]),
+    ("DDoS-GUARD", [], ["ddos-guard"], ["__ddg"]),
+    ("Comodo", [], ["comodo", "cwatch"], []),
+    ("Google Cloud Armor", ["x-cloud-trace-context"], ["google", "gfe"], []),
+]
+
+
+def _waf_match_by_headers(headers_lower, cookies_str):
+    """Passive match: look for known WAF signatures in headers + cookies."""
+    matches = []
+    server = headers_lower.get("server", "").lower()
+    via = headers_lower.get("via", "").lower()
+    for name, header_keys, server_keys, cookie_prefixes in WAF_SIGNATURES:
+        signals = []
+        for hk in header_keys:
+            if hk in headers_lower:
+                signals.append(f"header:{hk}")
+        for sk in server_keys:
+            if sk in server or sk in via:
+                signals.append(f"server:{sk}")
+        for cp in cookie_prefixes:
+            if cp.lower() in cookies_str.lower():
+                signals.append(f"cookie:{cp}")
+        if signals:
+            matches.append({"name": name, "signals": signals})
+    return matches
+
+
+async def test_waf_advanced(pool, target, active_probe=True):
+    """Comprehensive WAF detection + fingerprinting + strictness analysis.
+
+    Args:
+        pool: HttpPool
+        target: URL
+        active_probe: send test payloads (uses ~6 requests)
+
+    Returns: rich dict with waf, strictness, bypass_suggestions, etc.
+    """
+    result = {
+        "target": target,
+        "detected": False,
+        "waf": None,
+        "all_candidates": [],
+        "signals": [],
+        "strictness": None,
+        "blocked_status": None,
+        "bypass_suggestions": [],
+        "server_header": "",
+        "probes_sent": 0,
+    }
+
+    # ── 1. Passive detection ─────────────────────────────
+    resp = await pool.send("GET", target)
+    if not resp or resp.status == 0:
+        result["error"] = "unreachable"
+        return result
+
+    headers_lower = {k.lower(): (v or "") for k, v in (resp.headers or {}).items()}
+    result["server_header"] = headers_lower.get("server", "")
+    cookies_str = headers_lower.get("set-cookie", "")
+
+    candidates = _waf_match_by_headers(headers_lower, cookies_str)
+    result["all_candidates"] = candidates
+
+    if candidates:
+        result["detected"] = True
+        result["waf"] = candidates[0]["name"]
+        result["signals"] = candidates[0]["signals"]
+
+    # ── 2. Active probing (optional) ─────────────────────
+    if active_probe and not result["detected"]:
+        # Send a harmless XSS payload and see if it's blocked
+        test_url = target.rstrip("/") + "/?waf_probe=<script>alert(1)</script>"
+        try:
+            probe = await pool.send("GET", test_url)
+            result["probes_sent"] += 1
+            if probe and probe.status in (403, 406, 419, 501, 503):
+                result["detected"] = True
+                result["blocked_status"] = probe.status
+                result["strictness"] = "high"
+                result["signals"].append(f"active:HTTP{probe.status}")
+        except Exception:
+            pass
+
+        # Try SQL quote
+        test_url2 = target.rstrip("/") + "/?waf_probe=1'+OR+'1'='1"
+        try:
+            probe2 = await pool.send("GET", test_url2)
+            result["probes_sent"] += 1
+            if probe2 and probe2.status in (403, 406, 419):
+                result["detected"] = True
+                if not result["blocked_status"]:
+                    result["blocked_status"] = probe2.status
+                if result["strictness"] != "high":
+                    result["strictness"] = "medium"
+        except Exception:
+            pass
+
+    # ── 3. Infer strictness from detection ───────────────
+    if result["detected"] and not result["strictness"]:
+        if result["blocked_status"]:
+            result["strictness"] = "medium"
+        else:
+            result["strictness"] = "low"
+
+    # ── 4. Bypass suggestions ────────────────────────────
+    waf_name = result["waf"] or "unknown"
+    suggestions = {
+        "Cloudflare": ["Mixed case payloads", "Double URL encoding", "Unicode escapes",
+                       "Use chunked encoding", "Try different User-Agents"],
+        "AWS WAF": ["HTML entities", "Mixed case", "SQL comments",
+                    "URL encoding with %XX"],
+        "Akamai": ["Whitespace injection (tabs/newlines)", "Parameter pollution",
+                   "Multiple encoding layers"],
+        "Sucuri": ["Case variation", "Comment injection",
+                   "Alternative XSS vectors (SVG, MathML)"],
+        "Imperva": ["HTTP parameter pollution", "JSON-based payloads",
+                    "Charset manipulation (UTF-16, UTF-7)"],
+        "F5 BIG-IP": ["Chunked transfer", "Null byte injection", "HTTP/2 framing"],
+        "ModSecurity": ["SQL inline comments /*!*/", "Case variation",
+                        "Encoding double", "Buffer overflow probes"],
+        "Wordfence": ["Skip login endpoints", "Custom REST endpoints",
+                      "XML-RPC bypass"],
+        "Barracuda": ["URL encoding", "Case variation", "Comment injection"],
+    }
+    result["bypass_suggestions"] = suggestions.get(waf_name, [
+        "Try mixed case payloads", "Try URL encoding",
+        "Try double encoding", "Try chunked transfer",
+    ])
+
+    log.info("waf_advanced_complete",
+             detected=result["detected"],
+             waf=result["waf"],
+             strictness=result["strictness"],
+             candidates=len(candidates),
+             probes=result["probes_sent"])
+    return result
+
+
+async def waf_advanced_from_config(pool, config):
+    """Wrapper: extract target and store result in config."""
+    target = config.get("target", "")
+    if not target:
+        return None
+    result = await test_waf_advanced(pool, target, active_probe=True)
+    config["_waf_advanced"] = result
+    return result
+
+
+# END WAF ADVANCED
+
+
 async def detect_waf(pool, url):
     resp = await pool.send("GET", url + "/?test=<script>alert(1)</script>")
     if resp.status in (403, 406, 419, 429, 503):
@@ -2445,6 +2634,17 @@ async def run_vulnerability_tests_v2(pool, crawl_result, ai_plan, oast=None, waf
         ssti = await test_ssti(pool, [root], ["name", "q"])
         all_findings.extend(ssti)
     
+    # === WAF ADVANCED (Stage 2.B8) ===
+    try:
+        waf_adv = await test_waf_advanced(pool, target, active_probe=True)
+        if waf_adv and waf_adv.get("detected"):
+            summary["_waf_advanced"] = waf_adv
+            config["_waf_advanced"] = waf_adv
+            log.info("waf_advanced_wired", waf=waf_adv.get("waf"), strictness=waf_adv.get("strictness"))
+    except Exception as _waf:
+        log.warning("waf_advanced_failed", error=str(_waf))
+    # === END WAF ADVANCED ===
+
     # === FINGERPRINT ADVANCED (Stage 2.B2) ===
     try:
         advanced_fp = await test_fingerprint_advanced(pool, target)

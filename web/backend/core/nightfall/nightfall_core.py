@@ -70,6 +70,13 @@ class ScanConfig:
     output_dir: str = "reports"
     db_path: str = str(Path(__file__).resolve().parent.parent.parent / "falcon.db")
 
+    # === Protection layers (Stage 2.C, additive) ===
+    cb_threshold: int = 3          # failures before circuit opens
+    cb_cooldown: float = 30.0      # initial cooldown seconds
+    cb_max_trip: float = 120.0     # max cooldown seconds
+    max_retries: int = 2           # retry attempts for 5xx/timeout
+    retry_backoff: float = 1.0     # base backoff (doubles each retry)
+
 
 # ============================================================
 # Logger (safe for Windows + subprocess)
@@ -319,6 +326,131 @@ class RateLimiter:
             self._buckets[host] = (tokens, time.monotonic())
 
 
+
+# === ADAPTIVE RATE + CIRCUIT BREAKER (v2) ===
+# Added: 2026-09-21 — Stage 2.C
+# Purpose: Prevent server DoS via adaptive throttling + circuit breaker + retry.
+# Backward compatible: RateLimiter stays unchanged; these are optional layers.
+
+class CircuitBreaker:
+    """Trips open when target shows signs of stress (429/503/timeout).
+
+    States:
+      closed   → normal traffic
+      half-open → slow traffic (testing recovery)
+      open     → blocked for a cooldown period
+    """
+
+    def __init__(self, threshold=3, cooldown_sec=30.0, max_trip_sec=120.0):
+        self.threshold = threshold          # failures before trip
+        self.cooldown_sec = cooldown_sec    # initial cooldown
+        self.max_trip_sec = max_trip_sec    # max cooldown
+        self._state = {}                    # host -> "closed" | "open" | "half-open"
+        self._failures = {}                 # host -> consecutive count
+        self._opened_at = {}                # host -> monotonic timestamp
+        self._trip_count = {}               # host -> how many times tripped
+
+    def record_success(self, host):
+        """Reset failure counter on success."""
+        if not host:
+            return
+        self._failures[host] = 0
+        if self._state.get(host) == "half-open":
+            self._state[host] = "closed"
+
+    def record_failure(self, host, kind="block"):
+        """kind = 'block' (429/503) or 'timeout'."""
+        if not host:
+            return
+        self._failures[host] = self._failures.get(host, 0) + 1
+        if self._failures[host] >= self.threshold:
+            self._state[host] = "open"
+            self._opened_at[host] = time.monotonic()
+            self._trip_count[host] = self._trip_count.get(host, 0) + 1
+
+    def is_open(self, host):
+        """Return True if we should skip requests to this host."""
+        if not host:
+            return False
+        if self._state.get(host) != "open":
+            return False
+        # Check cooldown
+        opened_at = self._opened_at.get(host, 0)
+        elapsed = time.monotonic() - opened_at
+        # Cooldown doubles on each trip, capped at max
+        trips = self._trip_count.get(host, 1)
+        cooldown = min(self.cooldown_sec * (2 ** (trips - 1)), self.max_trip_sec)
+        if elapsed >= cooldown:
+            self._state[host] = "half-open"
+            self._failures[host] = 0
+            return False
+        return True
+
+    def status(self, host):
+        """Return diagnostic dict for a host."""
+        return {
+            "host": host,
+            "state": self._state.get(host, "closed"),
+            "failures": self._failures.get(host, 0),
+            "trips": self._trip_count.get(host, 0),
+        }
+
+
+class AdaptiveRateLimiter(RateLimiter):
+    """RateLimiter with dynamic rate adjustment based on server responses.
+
+    Starts at `rate_per_sec`. Halves on 429/503. Slowly recovers on success.
+    """
+
+    def __init__(self, rate_per_sec=30.0, burst=5, min_rate=1.0):
+        super().__init__(rate_per_sec=rate_per_sec, burst=burst)
+        self.base_rate = rate_per_sec
+        self.min_rate = min_rate
+        self._current_rate = {}   # host -> current effective rate
+        self._success_streak = {} # host -> consecutive successful requests
+
+    def get_rate(self, host):
+        return self._current_rate.get(host, self.base_rate)
+
+    def on_block(self, host):
+        """Halve the rate for this host (min = min_rate)."""
+        if not host:
+            return
+        current = self._current_rate.get(host, self.base_rate)
+        new_rate = max(current / 2.0, self.min_rate)
+        self._current_rate[host] = new_rate
+        self._success_streak[host] = 0
+
+    def on_success(self, host):
+        """Recover rate gradually after N consecutive successes."""
+        if not host:
+            return
+        self._success_streak[host] = self._success_streak.get(host, 0) + 1
+        # Every 10 successes, increase rate by 25% (up to base)
+        if self._success_streak[host] >= 10:
+            current = self._current_rate.get(host, self.base_rate)
+            if current < self.base_rate:
+                new_rate = min(current * 1.25, self.base_rate)
+                self._current_rate[host] = new_rate
+            self._success_streak[host] = 0
+
+    async def acquire(self, host):
+        """Uses dynamic rate for this host."""
+        # Use dynamic rate in token refill
+        if host in self._current_rate:
+            old_rate = self.rate
+            self.rate = self._current_rate[host]
+            try:
+                await super().acquire(host)
+            finally:
+                self.rate = old_rate
+        else:
+            await super().acquire(host)
+
+
+# === END ADAPTIVE RATE + CIRCUIT BREAKER (v2) ===
+
+
 @dataclass
 class HttpResponse:
     url: str
@@ -336,6 +468,23 @@ class HttpPool:
         self.config = config
         self.client = None
         self.request_count = 0
+
+        # === Protection layers (additive, backward compatible) ===
+        self.circuit_breaker = CircuitBreaker(
+            threshold=getattr(config, "cb_threshold", 3),
+            cooldown_sec=getattr(config, "cb_cooldown", 30.0),
+            max_trip_sec=getattr(config, "cb_max_trip", 120.0),
+        )
+        self.adaptive = (
+            self.rate if isinstance(self.rate, AdaptiveRateLimiter) else None
+        )
+        self.max_retries = getattr(config, "max_retries", 2)
+        self.retry_backoff = getattr(config, "retry_backoff", 1.0)
+        # Track retriable status codes
+        self.retriable_status = {500, 502, 503, 504}
+        # Track last error kind per host
+        self._blocked_hosts = set()
+        self._retry_count = 0  # stats
     async def __aenter__(self):
         self.client = httpx.AsyncClient(timeout=5.0, follow_redirects=True, verify=False, headers={"User-Agent": self.config.user_agent})
         return self
@@ -343,21 +492,116 @@ class HttpPool:
         if self.client:
             await self.client.aclose()
     async def send(self, method, url, **kwargs):
+        # ── 1. Scope & budget checks (as before) ─────────────
         if not self.scope.is_allowed(url):
             return HttpResponse(url=url, status=0, headers={}, text="", elapsed_ms=0.0, error="out of scope")
         if self.request_count >= self.config.budget:
             return HttpResponse(url=url, status=0, headers={}, text="", elapsed_ms=0.0, error="budget exhausted")
+
         parsed = urlparse(url)
-        await self.rate.acquire(parsed.hostname or "")
-        start = time.monotonic()
-        self.request_count += 1
-        try:
-            resp = await self.client.request(method, url, **kwargs)
-            elapsed = (time.monotonic() - start) * 1000
-            return HttpResponse(url=str(resp.url), status=resp.status_code, headers=dict(resp.headers), text=resp.text[:200000], elapsed_ms=round(elapsed, 2))
-        except Exception as exc:
-            elapsed = (time.monotonic() - start) * 1000
-            return HttpResponse(url=url, status=0, headers={}, text="", elapsed_ms=round(elapsed, 2), error=str(exc))
+        host = parsed.hostname or ""
+
+        # ── 2. Circuit breaker (NEW — additive) ──────────────
+        if self.circuit_breaker.is_open(host):
+            return HttpResponse(
+                url=url, status=0, headers={}, text="", elapsed_ms=0.0,
+                error=f"circuit_open (host={host})"
+            )
+
+        # ── 3. Rate limit (as before) ────────────────────────
+        await self.rate.acquire(host)
+
+        # ── 4. Retry loop for transient errors (NEW) ─────────
+        last_resp = None
+        attempt = 0
+        while attempt <= self.max_retries:
+            start = time.monotonic()
+            self.request_count += 1
+            if attempt > 0:
+                self._retry_count += 1
+
+            try:
+                resp = await self.client.request(method, url, **kwargs)
+                elapsed = (time.monotonic() - start) * 1000
+                status = resp.status_code
+
+                # Retriable status → schedule retry
+                if status in self.retriable_status and attempt < self.max_retries:
+                    # record block on the adaptive limiter
+                    if self.adaptive and status in (429, 503):
+                        self.adaptive.on_block(host)
+                    # wait before retry
+                    await asyncio.sleep(self.retry_backoff * (2 ** attempt))
+                    attempt += 1
+                    last_resp = resp
+                    continue
+
+                # 429/503 → record block
+                if status in (429, 503):
+                    self.circuit_breaker.record_failure(host, kind="block")
+                    if self.adaptive:
+                        self.adaptive.on_block(host)
+                else:
+                    # Success → record success
+                    self.circuit_breaker.record_success(host)
+                    if self.adaptive:
+                        self.adaptive.on_success(host)
+
+                return HttpResponse(
+                    url=str(resp.url), status=status,
+                    headers=dict(resp.headers),
+                    text=resp.text[:200000],
+                    elapsed_ms=round(elapsed, 2),
+                )
+
+            except Exception as exc:
+                elapsed = (time.monotonic() - start) * 1000
+                is_timeout = "timeout" in str(exc).lower()
+                if is_timeout:
+                    self.circuit_breaker.record_failure(host, kind="timeout")
+
+                if attempt < self.max_retries and is_timeout:
+                    await asyncio.sleep(self.retry_backoff * (2 ** attempt))
+                    attempt += 1
+                    continue
+
+                return HttpResponse(
+                    url=url, status=0, headers={}, text="",
+                    elapsed_ms=round(elapsed, 2), error=str(exc)
+                )
+
+        # All retries exhausted
+        if last_resp is not None:
+            return HttpResponse(
+                url=str(last_resp.url), status=last_resp.status_code,
+                headers=dict(last_resp.headers),
+                text=last_resp.text[:200000], elapsed_ms=0.0,
+                error="retries exhausted"
+            )
+        return HttpResponse(
+            url=url, status=0, headers={}, text="", elapsed_ms=0.0,
+            error="retries exhausted"
+        )
+
+    def protection_status(self):
+        """Return diagnostic dict of protection layers."""
+        return {
+            "circuit_breaker": {
+                "hosts_tracked": len(self.circuit_breaker._state),
+                "hosts_open": sum(
+                    1 for h in self.circuit_breaker._state
+                    if self.circuit_breaker._state[h] == "open"
+                ),
+            },
+            "adaptive": {
+                "enabled": self.adaptive is not None,
+                "hosts_throttled": len(self.adaptive._current_rate) if self.adaptive else 0,
+            },
+            "retries": {
+                "total_retries": self._retry_count,
+                "max_retries": self.max_retries,
+            },
+        }
 
 
 async def detect_waf(pool, url):

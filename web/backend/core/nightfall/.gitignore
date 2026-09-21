@@ -6,3 +6,5 @@
 *.cleaned
 _smoke_import.py
 _import_*.py
+
+*.before_xss_patch

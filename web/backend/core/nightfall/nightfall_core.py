@@ -699,38 +699,46 @@ def render_report(findings, summary, output_dir="reports"):
 # ============================================================
 
 async def test_xss(pool, endpoint, params, payloads=None):
-    """Test for reflected XSS."""
+    """Test for reflected XSS (uses framework helpers)."""
+    from framework_bridge import (
+        XSS_PAYLOADS, xss_verify_reflection, xss_find_context, xss_inject_param,
+    )
+
     if payloads is None:
-        payloads = [
-            "<script>alert(1)</script>",
-            "\"><script>alert(1)</script>",
-            "<img src=x onerror=alert(1)>",
-            "<svg onload=alert(1)>",
-            "javascript:alert(1)",
-        ]
+        payloads = XSS_PAYLOADS
+
     findings = []
     for param in params:
         for payload in payloads:
-            test_url = f"{endpoint}?{param}={payload}"
+            test_url = xss_inject_param(endpoint, param, payload)
             resp = await pool.send("GET", test_url)
             if resp.status == 0:
                 continue
-            body = resp.text
-            if payload in body:
-                findings.append({
-                    "vuln_class": "xss",
-                    "subtype": "reflected",
-                    "severity": "high",
-                    "url": endpoint,
-                    "param": param,
-                    "payload": payload,
-                    "evidence": body[:500],
-                    "confidence": 0.85,
-                })
-                log.info("xss_found", endpoint=endpoint, param=param, payload=payload[:50])
-                break
-    return findings
 
+            body = resp.text or ""
+            if not xss_verify_reflection(body, payload):
+                continue
+
+            ctx = xss_find_context(body, payload) or {}
+
+            findings.append({
+                "vuln_class": "xss",
+                "subtype": "reflected",
+                "severity": "high",
+                "url": endpoint,
+                "injected_url": test_url,
+                "param": param,
+                "payload": payload,
+                "context_type": ctx.get("type", "html"),
+                "context_before": ctx.get("before", ""),
+                "context_after": ctx.get("after", ""),
+                "evidence": body[:500],
+                "confidence": 0.9,
+            })
+            log.info("xss_found", endpoint=endpoint, param=param,
+                     payload=payload[:50])
+            break  # اكفِ بهذا param
+    return findings
 
 async def test_sqli(pool, endpoint, params):
     """Test for SQL injection (error-based + time-based)."""
@@ -2214,31 +2222,49 @@ class WAFBypassEngine:
 
 
 async def test_xss_with_waf_bypass(pool, endpoint, params, waf_detected=False):
+    """XSS test with WAF bypass variants (framework helpers)."""
+    from framework_bridge import (
+        xss_verify_reflection, xss_find_context,
+    )
+    from urllib.parse import quote
+
     findings = []
     base_payload = "<script>alert(1)</script>"
     for param in params:
-        variants = WAFBypassEngine.generate_bypasses(base_payload, "xss") if waf_detected else [base_payload]
+        variants = (
+            WAFBypassEngine.generate_bypasses(base_payload, "xss")
+            if waf_detected else [base_payload]
+        )
         for payload in variants:
-            from urllib.parse import quote
-            test_url = f"{endpoint}?{param}={quote(payload)}"
+            test_url = f"{endpoint}?{param}={quote(payload, safe='')}"
             resp = await pool.send("GET", test_url)
             if resp.status == 0:
                 continue
-            if payload in resp.text or base_payload in resp.text:
-                findings.append({
-                    "vuln_class": "xss",
-                    "subtype": "reflected_waf_bypass" if waf_detected else "reflected",
-                    "severity": "high",
-                    "url": test_url,
-                    "param": param,
-                    "payload": payload,
-                    "evidence": resp.text[:300],
-                    "confidence": 0.85,
-                })
-                log.info("xss_found", endpoint=endpoint, param=param, waf_bypass=waf_detected)
-                break
-    return findings
 
+            body = resp.text or ""
+            if not xss_verify_reflection(body, payload):
+                continue
+
+            ctx = xss_find_context(body, payload) or {}
+
+            findings.append({
+                "vuln_class": "xss",
+                "subtype": "reflected_waf_bypass" if waf_detected else "reflected",
+                "severity": "high",
+                "url": test_url,
+                "injected_url": test_url,
+                "param": param,
+                "payload": payload,
+                "context_type": ctx.get("type", "html"),
+                "context_before": ctx.get("before", ""),
+                "context_after": ctx.get("after", ""),
+                "evidence": body[:300],
+                "confidence": 0.9,
+            })
+            log.info("xss_found", endpoint=endpoint, param=param,
+                     waf_bypass=waf_detected)
+            break
+    return findings
 
 async def test_sqli_with_waf_bypass(pool, endpoint, params, waf_detected=False):
     findings = []

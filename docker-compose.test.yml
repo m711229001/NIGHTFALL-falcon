@@ -1,0 +1,18 @@
+﻿services:
+  dvwa:
+    image: vulnerables/web-dvwa
+    container_name: nightfall-dvwa
+    ports:
+      - "8080:80"
+    environment:
+      - MYSQL_PASS=p@ssw0rd
+  juice-shop:
+    image: bkimminich/juice-shop:latest
+    container_name: nightfall-juice-shop
+    ports:
+      - "3000:3000"
+  bwapp:
+    image: raesene/bwapp
+    container_name: nightfall-bwapp
+    ports:
+      - "8081:80"
